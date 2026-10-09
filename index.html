@@ -1,0 +1,138 @@
+<!doctype html>
+<!-- Libreta del hogar. Esta página, estilos.css y app.js van juntos en la misma carpeta. -->
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Libreta del hogar</title>
+<meta name="description" content="La alacena, la lista de compras y los gastos de la casa, mes a mes.">
+<meta name="theme-color" content="#EDF1F7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0E1423" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%232343B5'/%3E%3Cpath d='M9 6h14v20l-2.3-1.7-2.4 1.7-2.3-1.7-2.3 1.7-2.4-1.7L9 26z' fill='%23fff'/%3E%3Cpath d='M12.5 11.5h7M12.5 15.5h7M12.5 19.5h4' stroke='%232343B5' stroke-width='1.7' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..900&amp;family=Chivo+Mono:wght@400..700&amp;display=swap">
+<link rel="stylesheet" href="estilos.css">
+</head>
+<body>
+
+<noscript><p class="aviso aviso-rojo">Esta página necesita JavaScript para funcionar.</p></noscript>
+
+<!-- Íconos: se dibujan una vez acá y se usan con <use href="#i-…"> -->
+<svg class="oculto" width="0" height="0" aria-hidden="true" focusable="false">
+  <defs>
+    <symbol id="i-alacena" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="1"/><path d="M4 9h16M4 15h16M8 6v3M12 5v4M15.5 11.5V15M9 12.5V15M13 18v3"/></symbol>
+    <symbol id="i-compras" viewBox="0 0 24 24"><path d="M3 5h2.2l2.4 10.5h9.9L19.8 8H7"/><circle cx="9.3" cy="19" r="1.3"/><circle cx="16.4" cy="19" r="1.3"/></symbol>
+    <symbol id="i-gastos" viewBox="0 0 24 24"><path d="M6 3h12v18l-2-1.5-2 1.5-2-1.5-2 1.5-2-1.5L6 21z"/><path d="M9 8h6M9 12h6M9 16h3"/></symbol>
+    <symbol id="i-escanear" viewBox="0 0 24 24"><path d="M3 8V5a1 1 0 0 1 1-1h3M17 4h3a1 1 0 0 1 1 1v3M21 16v3a1 1 0 0 1-1 1h-3M7 20H4a1 1 0 0 1-1-1v-3"/><path d="M7.5 8v8M10.5 8v8M13.5 8v8M16.5 8v8"/></symbol>
+    <symbol id="i-camara" viewBox="0 0 24 24"><path d="M4 8h3l1.5-2.5h7L17 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13.2" r="3.4"/></symbol>
+    <symbol id="i-imagen" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="1"/><path d="M3 16l5-5 4 4 3-3 6 6"/><circle cx="15.5" cy="9.5" r="1.2"/></symbol>
+    <symbol id="i-mas" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-menos" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+    <symbol id="i-ajustes" viewBox="0 0 24 24"><path d="M4 7h9M19 7h1M4 17h1M11 17h9"/><circle cx="16" cy="7" r="2.4"/><circle cx="8" cy="17" r="2.4"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+    <symbol id="i-ok" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+    <symbol id="i-copiar" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="1"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></symbol>
+    <symbol id="i-buscar" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.6-4.6"/></symbol>
+    <symbol id="i-izq" viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></symbol>
+    <symbol id="i-der" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
+    <symbol id="i-lapiz" viewBox="0 0 24 24"><path d="M4 20l1-4L16 5l3 3L8 19z"/><path d="M14 7l3 3"/></symbol>
+  </defs>
+</svg>
+
+<div class="app" id="app">
+  <!-- Encabezado: marca, pestañas y ajustes -->
+  <header class="tope">
+    <div class="marca"><span class="marca-nombre">Libreta</span><span class="marca-sub">del hogar</span></div>
+    <nav class="pestanas" aria-label="Secciones">
+      <a href="#alacena" data-tab="alacena" aria-current="page"><span class="pestana-ico"><svg class="ico" aria-hidden="true"><use href="#i-alacena"/></svg></span>Alacena</a>
+      <a href="#compras" data-tab="compras"><span class="pestana-ico"><svg class="ico" aria-hidden="true"><use href="#i-compras"/></svg><span class="globo" id="globo-compras" hidden></span></span>Compras</a>
+      <a href="#gastos" data-tab="gastos"><span class="pestana-ico"><svg class="ico" aria-hidden="true"><use href="#i-gastos"/></svg></span>Gastos</a>
+    </nav>
+    <button type="button" class="icono-btn" data-act="ajustes" aria-label="Ajustes"><svg class="ico" aria-hidden="true"><use href="#i-ajustes"/></svg></button>
+  </header>
+
+  <!-- Avisos generales: sin conexión, solo lectura, datos de ejemplo -->
+  <div id="avisos"></div>
+
+  <main>
+    <!-- Alacena: qué hay y para cuánto alcanza -->
+    <section id="tab-alacena" class="tab" aria-labelledby="tit-alacena">
+      <div class="cabeza">
+        <h1 id="tit-alacena">Alacena</h1>
+        <p class="resumen" id="al-resumen"></p>
+      </div>
+      <div class="acciones" data-escribe>
+        <button type="button" class="btn btn-principal" data-act="escanear"><svg class="ico" aria-hidden="true"><use href="#i-escanear"/></svg>Escanear producto</button>
+        <button type="button" class="btn" data-act="producto-nuevo" aria-label="Agregar un producto a mano"><svg class="ico" aria-hidden="true"><use href="#i-mas"/></svg>A mano</button>
+      </div>
+      <div class="filtros" id="al-filtros" hidden>
+        <label class="buscar"><svg class="ico" aria-hidden="true"><use href="#i-buscar"/></svg><input type="search" id="al-buscar" placeholder="Buscar en la alacena" autocomplete="off" aria-label="Buscar en la alacena"></label>
+        <div class="chips" id="al-chips" role="group" aria-label="Filtrar la alacena"></div>
+      </div>
+      <div class="lista" id="al-lista">
+        <div class="vacio">
+          <h3>Acá va tu alacena</h3>
+          <p>Cada producto con cuánto queda y para cuántos días alcanza según lo que se consume en casa. Para cargar el primero, tocá <strong>Escanear producto</strong> y apuntá la cámara a su código de barras.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Compras: la lista que se arma sola según el consumo -->
+    <section id="tab-compras" class="tab" aria-labelledby="tit-compras" hidden>
+      <div class="cabeza">
+        <h1 id="tit-compras">Compras</h1>
+        <p class="resumen" id="co-resumen"></p>
+      </div>
+      <div class="frecuencia">
+        <span id="co-frec-rotulo">Hacés las compras cada</span>
+        <div class="segmentos" id="co-frec" role="group" aria-labelledby="co-frec-rotulo">
+          <button type="button" data-act="frecuencia" data-frec="7" aria-pressed="true">7 días</button>
+          <button type="button" data-act="frecuencia" data-frec="15" aria-pressed="false">15 días</button>
+          <button type="button" data-act="frecuencia" data-frec="30" aria-pressed="false">30 días</button>
+        </div>
+      </div>
+      <div class="lista" id="co-lista">
+        <div class="vacio">
+          <h3>Acá aparece qué comprar</h3>
+          <p>La lista se arma sola con lo que se terminó o está por terminarse, y sugiere cuánto llevar según el ritmo de consumo de la casa.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Gastos: tickets y total de cada mes -->
+    <section id="tab-gastos" class="tab" aria-labelledby="tit-gastos" hidden>
+      <div class="cabeza">
+        <h1 id="tit-gastos">Gastos</h1>
+      </div>
+      <div class="acciones" data-escribe>
+        <button type="button" class="btn btn-principal" data-act="subir-ticket"><svg class="ico" aria-hidden="true"><use href="#i-camara"/></svg>Subir ticket</button>
+        <button type="button" class="btn" data-act="gasto-manual" aria-label="Cargar un gasto a mano"><svg class="ico" aria-hidden="true"><use href="#i-lapiz"/></svg>A mano</button>
+      </div>
+      <div class="lista" id="ga-cuerpo">
+        <div class="vacio">
+          <h3>Acá se ve el gasto mes a mes</h3>
+          <p>Cargá cada gasto con su total y, si querés, con la foto del ticket. Con eso la libreta arma el gasto de cada mes y en qué se fue.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- Hoja que sube desde abajo: fichas, escáner, tickets, ajustes. La llena app.js -->
+<div id="fondo-hoja" class="fondo-hoja" hidden>
+  <div class="hoja-modal" id="hoja" role="dialog" aria-modal="true" aria-labelledby="hoja-titulo" tabindex="-1"></div>
+</div>
+<!-- Aviso breve al pie, con «Deshacer» cuando corresponde -->
+<div id="tostada" class="tostada" role="status" aria-live="polite" hidden></div>
+
+<!-- Entradas de archivo ocultas: las abren los botones de sacar o elegir foto -->
+<input class="oculto" type="file" id="in-prod-cam" accept="image/*" capture="environment" tabindex="-1" aria-hidden="true">
+<input class="oculto" type="file" id="in-prod-gal" accept="image/*" tabindex="-1" aria-hidden="true">
+<input class="oculto" type="file" id="in-tic-cam" accept="image/*" capture="environment" tabindex="-1" aria-hidden="true">
+<input class="oculto" type="file" id="in-tic-gal" accept="image/*" tabindex="-1" aria-hidden="true">
+<input class="oculto" type="file" id="in-copia" accept="application/json,.json" tabindex="-1" aria-hidden="true">
+
+<script src="app.js"></script>
+</body>
+</html>
