@@ -1,0 +1,32 @@
+{
+  "name": "Libreta del hogar",
+  "short_name": "Libreta",
+  "description": "La alacena, la lista de compras y los gastos de la casa, compartidos con tu familia. Avisa qué falta, cuánto subió cada cosa y dónde conviene comprar.",
+  "lang": "es",
+  "dir": "ltr",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#EDF1F7",
+  "theme_color": "#EDF1F7",
+  "categories": ["food", "shopping", "lifestyle", "productivity"],
+  "prefer_related_applications": false,
+  "icons": [
+    { "src": "iconos/icono-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "iconos/icono-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "iconos/icono-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "screenshots": [
+    { "src": "capturas/alacena.png", "sizes": "1080x1920", "type": "image/png", "form_factor": "narrow", "label": "La alacena: cuánto queda de cada cosa y para cuántos días alcanza" },
+    { "src": "capturas/compras.png", "sizes": "1080x1920", "type": "image/png", "form_factor": "narrow", "label": "La lista de compras se arma sola y dice dónde conviene comprar" },
+    { "src": "capturas/gastos.png", "sizes": "1080x1920", "type": "image/png", "form_factor": "narrow", "label": "El gasto del mes y cuánto queda del presupuesto" },
+    { "src": "capturas/novedades.png", "sizes": "1080x1920", "type": "image/png", "form_factor": "narrow", "label": "Cuánto subió la canasta de tu casa" }
+  ],
+  "shortcuts": [
+    { "name": "Lista de compras", "short_name": "Compras", "description": "Qué falta en casa y cuánto llevar", "url": "./#compras", "icons": [{ "src": "iconos/icono-192.png", "sizes": "192x192", "type": "image/png" }] },
+    { "name": "Gastos del mes", "short_name": "Gastos", "description": "Cuánto se va gastando y en qué", "url": "./#gastos", "icons": [{ "src": "iconos/icono-192.png", "sizes": "192x192", "type": "image/png" }] },
+    { "name": "Novedades de precios", "short_name": "Novedades", "description": "Qué subió y dónde conviene comprar", "url": "./#novedades", "icons": [{ "src": "iconos/icono-192.png", "sizes": "192x192", "type": "image/png" }] }
+  ]
+}

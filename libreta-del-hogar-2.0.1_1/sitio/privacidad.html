@@ -1,0 +1,153 @@
+<!doctype html>
+<!-- Libreta del hogar: política de privacidad y condiciones de uso. Es la dirección que se declara en Google Play.
+     El nombre del responsable y el email de contacto salen de config.js (el bloque «contacto»). -->
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacidad y condiciones · Libreta del hogar</title>
+<meta name="description" content="Qué datos guarda la Libreta del hogar, para qué, con quién se comparten y cómo borrarlos.">
+<meta name="theme-color" content="#EDF1F7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0E1423" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="iconos/icono-192.png">
+<style>
+  :root { --fondo: #EDF1F7; --hoja: #FFFFFF; --tinta: #131C33; --tinta-2: #4B5670; --linea: #C3CCDD; --azul: #2343B5; --aviso: #FFF4C2; --aviso-borde: #E5C100; color-scheme: light dark; }
+  @media (prefers-color-scheme: dark) { :root { --fondo: #0E1423; --hoja: #172036; --tinta: #EEF2FA; --tinta-2: #A9B4CC; --linea: #33405E; --azul: #9DB2FF; --aviso: #3A3310; --aviso-borde: #8A7400; } }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; padding: 20px 16px 48px; background: var(--fondo); color: var(--tinta); font: 400 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; }
+  main { max-width: 720px; margin: 0 auto; padding: 22px 20px 28px; border: 1.5px solid var(--linea); border-radius: 10px; background: var(--hoja); }
+  h1 { margin: 0 0 4px; font-size: 30px; line-height: 1.1; }
+  h2 { margin: 34px 0 8px; padding-top: 18px; border-top: 1.5px solid var(--linea); font-size: 22px; line-height: 1.2; }
+  h3 { margin: 22px 0 6px; font-size: 17px; }
+  p, ul, ol { margin: 0 0 12px; }
+  ul, ol { padding-left: 22px; }
+  li { margin-bottom: 6px; }
+  a { color: var(--azul); }
+  .tenue { color: var(--tinta-2); }
+  .chico { font-size: 14px; }
+  .falta { padding: 12px 14px; border: 1.5px solid var(--aviso-borde); border-radius: 8px; background: var(--aviso); }
+  .indice { padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 6px 18px; }
+  .indice li { margin: 0; }
+  .volver { display: inline-block; margin-bottom: 14px; font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; margin: 0 0 12px; font-size: 15px; }
+  th, td { padding: 8px 8px 8px 0; border-bottom: 1px solid var(--linea); text-align: left; vertical-align: top; }
+  th { width: 34%; font-weight: 600; }
+</style>
+</head>
+<body>
+<main>
+  <a class="volver" href="./">← Volver a la libreta</a>
+  <h1>Privacidad y condiciones de uso</h1>
+  <p class="tenue">Libreta del hogar · Última actualización: octubre de 2026</p>
+  <p class="falta" id="falta" hidden><strong>Falta completar quién responde por esta app.</strong> En el archivo <code>config.js</code>, el bloque <code>contacto</code> tiene que tener el nombre del responsable y un email.</p>
+
+  <ul class="indice">
+    <li><a href="#datos">Qué datos guarda</a></li>
+    <li><a href="#ubicacion">Ubicación y cámara</a></li>
+    <li><a href="#terceros">Con quién se comparten</a></li>
+    <li><a href="#borrar">Cómo borrar tus datos</a></li>
+    <li><a href="#condiciones">Condiciones de uso</a></li>
+  </ul>
+
+  <p>La Libreta del hogar sirve para llevar la alacena, la lista de compras y los gastos de una casa entre todas las personas que viven en ella. Esta página cuenta, sin vueltas, qué datos usa, para qué, dónde quedan y cómo borrarlos.</p>
+  <p><strong>Responsable:</strong> <span data-responsable>el responsable de esta app</span>. <strong>Contacto:</strong> <span data-email>el email que figura en la ficha de la app</span>.</p>
+
+  <h2 id="datos">Qué datos guarda la libreta</h2>
+
+  <h3>Tu cuenta</h3>
+  <p>Se entra con una cuenta de Google. De esa cuenta la libreta recibe tu <strong>nombre</strong>, tu <strong>email</strong> y un identificador, y los usa solamente para reconocerte en cualquier teléfono y para que los demás integrantes de tu hogar sepan quién sos. Tu contraseña la maneja Google: la libreta no la ve.</p>
+
+  <h3>Tu hogar</h3>
+  <p>Lo que cargan los integrantes: los productos, cuántos hay y cuándo se usaron o se compraron, los precios y en qué comercio, los gastos, las notas que se dejan entre ustedes y los ajustes. Estos datos se guardan en un servidor y <strong>solo los pueden ver y cambiar los integrantes de ese hogar</strong>. Para entrar a un hogar hace falta un código que da alguien que ya está adentro, que vale 15 minutos y sirve una sola vez.</p>
+  <p>De cada comercio que ubicás en el mapa queda el nombre que le pusiste y cuál es ese lugar en Google Maps (su identificador). El nombre y la dirección que muestra Google no se guardan: se le piden cada vez.</p>
+
+  <h3>Lo que queda solo en tu teléfono</h3>
+  <ul>
+    <li>Las <strong>fotos de los tickets</strong>. No se suben a ningún servidor.</li>
+    <li>Tu <strong>ubicación</strong>, si la activaste (ver más abajo).</li>
+    <li>Dónde quedan los comercios que ubicaste, por 30 días como mucho.</li>
+    <li>Una copia de los datos de tu hogar, para que la libreta ande sin conexión, y preferencias (por ejemplo, qué notas ya leíste).</li>
+  </ul>
+
+  <h3>Los precios que tu hogar comparte con la zona</h3>
+  <p>Es optativo: lo decide cada hogar y se cambia cuando quieran en Ajustes. Si tu hogar comparte, por cada precio que anotan en un comercio ubicado en el mapa se guarda: el <strong>código de barras</strong> del producto, el <strong>precio</strong>, el <strong>día</strong>, el <strong>comercio</strong> (su identificador de Google Maps y dónde queda) y la zona. <strong>No lleva tu nombre, tu cuenta ni tu hogar</strong>, y no hay forma de saber quién lo cargó. Lo puede ver cualquier persona que use la libreta. Cada precio vale 30 días como mucho: después deja de mostrarse y, a los pocos días, se borra del servidor.</p>
+
+  <h3>Para qué se usan</h3>
+  <p>Para que la libreta funcione: mostrarte tu alacena, armar la lista de compras, calcular cuánto subió cada cosa y avisarte dónde otros hogares consiguieron más barato. <strong>No hay publicidad, no se arman perfiles y no se venden ni se ceden datos.</strong></p>
+
+  <h2 id="ubicacion">Ubicación y cámara</h2>
+  <p>La libreta pide tu <strong>ubicación</strong> únicamente cuando tocás «Buscar comercios cerca mío» o «Usar mi ubicación». La usa para dos cosas:</p>
+  <ul>
+    <li>pedirle a Google Maps los comercios que hay cerca (ese punto se le envía a Google);</li>
+    <li>pedirle al servidor de la libreta los precios compartidos de tu zona (se le envía en qué cuadros del mapa estás, de unos 10 km de lado, no el punto exacto).</li>
+  </ul>
+  <p>Tu ubicación no se guarda en tu hogar ni la ve ninguna otra persona. Queda en tu teléfono, y la borrás cuando quieras en Ajustes → «Olvidarla». Sin dar la ubicación la libreta anda igual: los comercios se pueden buscar por su nombre.</p>
+  <p>La <strong>cámara</strong> se usa para leer códigos de barras y para sacarle una foto a un ticket. El código se lee en el teléfono; las imágenes no salen de él.</p>
+
+  <h2 id="terceros">Con quién se comparten</h2>
+  <p>Con nadie, salvo los servicios que hacen falta para que la libreta funcione:</p>
+  <table>
+    <tr><th>Google Firebase</th><td>Guarda las cuentas (Firebase Authentication) y los datos de los hogares y los precios compartidos (Cloud Firestore), en servidores de Google.</td></tr>
+    <tr><th>Google Maps Platform</th><td>Busca los comercios y dibuja el mapa. Recibe lo que escribís al buscar un comercio y, si buscás cerca, tu ubicación.</td></tr>
+    <tr><th>Open Food Facts</th><td>Base pública de productos. Recibe el código de barras que escaneás, para decir de qué producto es.</td></tr>
+    <tr><th>Google Fonts y el alojamiento del sitio</th><td>Entregan las tipografías y los archivos de la app. Como cualquier sitio web, ven la dirección IP de tu conexión.</td></tr>
+  </table>
+  <p>Esta app usa los servicios de Google Maps Platform. Al usar las funciones de mapa y de búsqueda de comercios, quedás sujeto a las <a href="https://maps.google.com/help/terms_maps/" target="_blank" rel="noopener">Condiciones de Servicio Adicionales de Google Maps/Google Earth</a> y a la <a href="https://policies.google.com/privacy" target="_blank" rel="noopener">Política de Privacidad de Google</a>.</p>
+  <p>La conexión con todos esos servicios va cifrada (HTTPS).</p>
+
+  <h2 id="borrar">Cómo borrar tus datos</h2>
+  <h3>Borrar tu cuenta</h3>
+  <ol>
+    <li>Abrí la libreta y entrá con tu cuenta. <a href="./#cuenta">Este enlace te lleva directo</a>.</li>
+    <li>Tocá <strong>Ajustes</strong> (arriba a la derecha) y, abajo de los integrantes, <strong>«Borrar mi cuenta»</strong>.</li>
+    <li>Confirmá. Google te pide que entres una vez más, para comprobar que sos vos.</li>
+  </ol>
+  <p>Con eso se borra tu cuenta de la libreta y lo que la libreta tiene anotado de vos. Si sos la única persona de tu hogar, se borra también el hogar con todos sus productos, gastos y notas. Si hay más integrantes, el hogar sigue para ellos, con lo que se cargó hasta ese momento.</p>
+  <h3>Borrar algunas cosas sin borrar la cuenta</h3>
+  <ul>
+    <li>Cada producto, cada gasto y cada nota se puede borrar desde su propia pantalla.</li>
+    <li>Ajustes → «Salir de este hogar» te saca del hogar; si eras la única persona, lo borra entero.</li>
+    <li>Ajustes → «Olvidarla» borra del teléfono tu ubicación.</li>
+    <li>Los precios compartidos con la zona no están atados a ninguna cuenta, así que no se pueden buscar por persona: dejan de mostrarse a los 30 días como mucho y se borran solos a los pocos días. Para que tu hogar deje de compartir, destildá esa opción en Ajustes.</li>
+  </ul>
+  <h3>Si no podés entrar a la app</h3>
+  <p>Escribí a <span data-email>el email que figura en la ficha de la app</span> desde el email de tu cuenta, pidiendo que se borre, y se borra dentro de los 30 días.</p>
+  <h3>Cuánto tiempo se guardan</h3>
+  <p>Los datos de un hogar se guardan mientras el hogar exista. Las notas se borran solas cuando pasa el tiempo que eligió quien las dejó. Los precios compartidos valen 30 días como mucho y se borran a los pocos días de vencer. Tu cuenta, hasta que la borres.</p>
+
+  <h2 id="derechos">Tus derechos</h2>
+  <p>Podés pedir en cualquier momento ver, corregir o borrar tus datos personales, escribiendo a <span data-email>el email que figura en la ficha de la app</span>. La libreta no está pensada para menores de 13 años.</p>
+  <p class="chico tenue">En la Argentina: el titular de los datos personales tiene la facultad de ejercer el derecho de acceso a los mismos en forma gratuita a intervalos no inferiores a seis meses, salvo que se acredite un interés legítimo al efecto, conforme lo establecido en el artículo 14, inciso 3 de la Ley N.º 25.326. La Agencia de Acceso a la Información Pública, en su carácter de Órgano de Control de la Ley N.º 25.326, tiene la atribución de atender las denuncias y reclamos que interpongan quienes resulten afectados en sus derechos por incumplimiento de las normas vigentes en materia de protección de datos personales.</p>
+
+  <h2 id="condiciones">Condiciones de uso</h2>
+  <ol>
+    <li><strong>Qué es.</strong> Una herramienta gratuita para organizar la alacena, las compras y los gastos de una casa. Usarla significa aceptar estas condiciones y la política de privacidad de arriba.</li>
+    <li><strong>Tu hogar es de quienes lo integran.</strong> Cualquier integrante puede ver, cambiar y borrar lo que hay en el hogar, y quitar a otros integrantes. Invitá solo a personas de confianza.</li>
+    <li><strong>Los precios de otros hogares son orientativos.</strong> Los cargan otras personas: pueden estar mal o haber cambiado. La libreta no garantiza precios, ofertas ni que haya mercadería.</li>
+    <li><strong>Si compartís precios, que sean los que pagaste.</strong> No se pueden cargar precios falsos a propósito ni usar la libreta para perjudicar a un comercio o a otras personas. Se pueden quitar los precios falsos y cerrar las cuentas que abusen.</li>
+    <li><strong>Mapas.</strong> Los mapas y los datos de los comercios son de Google. Al usarlos quedás sujeto a las <a href="https://maps.google.com/help/terms_maps/" target="_blank" rel="noopener">Condiciones de Servicio Adicionales de Google Maps/Google Earth</a> y a la <a href="https://policies.google.com/privacy" target="_blank" rel="noopener">Política de Privacidad de Google</a>.</li>
+    <li><strong>Sin garantías.</strong> La libreta se ofrece como está. Puede fallar o dejar de estar disponible, y no reemplaza un registro contable. Conviene bajar cada tanto una copia de tus datos: Ajustes → «Guardar una copia».</li>
+    <li><strong>Cambios.</strong> Si estas condiciones o la política de privacidad cambian, la versión nueva se publica en esta misma página, con su fecha.</li>
+    <li><strong>Ley aplicable.</strong> Estas condiciones se rigen por las leyes de la República Argentina.</li>
+  </ol>
+  <p class="tenue chico">¿Dudas? Escribí a <span data-email>el email que figura en la ficha de la app</span>.</p>
+</main>
+<script src="config.js"></script>
+<script>
+  // El responsable y el email salen de config.js. Si faltan, se avisa arriba: sin ellos la página no sirve para la tienda.
+  (function () {
+    var c = (typeof contacto === 'object' && contacto) || {}, quien = String(c.responsable || '').trim(), email = String(c.email || '').trim();
+    var bien = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email);
+    document.querySelectorAll('[data-responsable]').forEach(function (el) { if (quien) el.textContent = quien; });
+    document.querySelectorAll('[data-email]').forEach(function (el) {
+      if (!bien) return;
+      var a = document.createElement('a');
+      a.href = 'mailto:' + email; a.textContent = email;
+      el.textContent = ''; el.appendChild(a);
+    });
+    if (!quien || !bien) document.getElementById('falta').hidden = false;
+  })();
+</script>
+</body>
+</html>

@@ -1,0 +1,101 @@
+﻿LIBRETA DEL HOGAR · versión 2
+
+La alacena, las compras y los gastos de la casa, compartidos con la familia.
+Cada persona entra con su cuenta de Google desde su teléfono.
+
+QUÉ HAY EN ESTE PAQUETE
+
+  sitio            Los archivos de la app. Es lo que se sube a GitHub Pages:
+                   el CONTENIDO de la carpeta (con sus carpetas «iconos»,
+                   «capturas» y «.well-known»), no la carpeta.
+    config.js      El único archivo que hay que tocar. Lleva tres cosas:
+                   el bloque de tu proyecto de Firebase, la clave de Google Maps
+                   (optativa) y tu nombre y email de contacto.
+    privacidad.html  La política de privacidad y las condiciones de uso.
+                   Su dirección es la que pide Google Play.
+  firestore.rules  Las reglas de seguridad. Se pegan en la consola de Firebase.
+                   Se abre con el Bloc de notas.
+  tienda           Imágenes para la ficha de Google Play: el ícono, el gráfico
+                   de 1024 x 500 y cuatro capturas de pantalla de muestra.
+  LEEME.txt        Este archivo.
+
+La guía completa, con cada pantalla y qué hacer si algo falla, es el documento
+«Libreta compartida: puesta en marcha». Acá van los pasos en corto.
+
+1. FIREBASE (el servidor; no tiene costo en el plan gratuito)
+
+  1. Crear un proyecto en https://console.firebase.google.com
+  2. Security > Authentication > Sign-in method: habilitar «Google».
+  3. En Authentication, pestaña «Settings» > Authorized domains: agregar el
+     dominio del sitio, por ejemplo  tuusuario.github.io
+  4. Databases & Storage > Firestore > Create database, en «Production mode».
+  5. En Firestore, pestaña «Rules»: reemplazar todo por el contenido de
+     firestore.rules y tocar «Publish».
+  6. Project settings > Your apps: registrar una app web y copiar su bloque
+        const firebaseConfig = { ... };
+     dentro de sitio/config.js, en lugar del bloque vacío que trae.
+
+  Si ya tenías la versión anterior: hay que repetir los pasos 2, 3 y 5
+  (cambió la forma de entrar y cambiaron las reglas) y volver a subir el sitio.
+
+2. GOOGLE MAPS (optativo: comercios con su dirección, mapa y precios de la zona)
+
+  Sin esto la libreta anda igual: los comercios se anotan a mano.
+  Google Maps pide una tarjeta, pero regala un uso mensual; con los topes del
+  paso 5 nunca se pasa de lo gratuito.
+
+  1. En https://console.cloud.google.com crear un proyecto NUEVO, distinto del
+     de Firebase (así Firebase sigue en su plan gratuito).
+  2. Activar la facturación en ese proyecto.
+  3. Habilitar dos APIs: «Maps JavaScript API» y «Places API (New)».
+  4. Credenciales > Crear credenciales > Clave de API. Restringirla:
+       · a sitios web:  https://tuusuario.github.io/*
+       · a esas dos APIs.
+  5. Google Maps Platform > Cuotas (Quotas). En cada una: tres puntitos >
+     «Edit quota», destildar «Unlimited», poner el valor y enviar.
+       Maps JavaScript API   Map loads per day                   300
+       Places API (New)      SearchNearbyRequest per day         150
+                             GetPlaceRequest per day             150
+                             AutocompletePlacesRequest per day   300
+                             SearchTextRequest per day             1
+                             GetPhotoMediaRequest per day          1
+  6. Pegar la clave en sitio/config.js, en  const googleMapsKey = "";
+
+3. TUS DATOS DE CONTACTO
+
+  En sitio/config.js, completar el bloque «contacto» con tu nombre (o el de tu
+  empresa) y un email. Los muestra la página de privacidad.
+
+4. SUBIR EL SITIO
+
+  Subir el contenido de «sitio» a GitHub Pages, en un repositorio que se llame
+  tuusuario.github.io. Revisar que hayan subido el archivo «.nojekyll» y la
+  carpeta «.well-known».
+
+  En el teléfono, abrir la dirección y tocar «Probar la conexión con el
+  servidor»: tienen que quedar todos los pasos en verde. Después, «Continuar
+  con Google» y «Crear un hogar nuevo». A los demás se los suma desde
+  Ajustes > «Sumar a alguien».
+
+5. GOOGLE PLAY (con PWABuilder)
+
+  1. En https://www.pwabuilder.com poner la dirección del sitio >
+     «Package for stores» > Android > «Generate Package».
+     Signing key: «New». Location delegation: activado.
+  2. Del zip que baja, GUARDAR BIEN  signing.keystore  y  signing-key-info.txt :
+     hacen falta para cada actualización.
+  3. El contenido del  assetlinks.json  del zip reemplaza al de
+        .well-known/assetlinks.json   (en el sitio; viene con una lista vacía)
+     Sin él, la app muestra la barra del navegador.
+  4. En Google Play Console se sube el archivo .aab. Después hay que agregar a
+     assetlinks.json la segunda huella (SHA-256) que muestra Play Console en
+     «App integrity > App signing» y volver a subirlo.
+  5. En la ficha de la app:
+       Política de privacidad:   https://tuusuario.github.io/privacidad.html
+       Para borrar la cuenta:    https://tuusuario.github.io/privacidad.html#borrar
+       Imágenes:                 las de la carpeta «tienda».
+
+SI ALGO NO ANDA
+
+En la app, Ajustes > «Probar la conexión» muestra en qué paso se traba y,
+en letra gris, lo que contestó Firebase o Google Maps. Con eso se sabe qué corregir.
