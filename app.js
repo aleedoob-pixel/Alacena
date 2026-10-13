@@ -2302,7 +2302,7 @@ const Datos = (() => {
       sinConexion: 'No se pudo abrir la conexión con el servidor. Revisá internet y recargá la página.',
       donde: 'Los datos de este hogar se guardan en Firebase, un servicio de Google, y los ven solo sus integrantes. Cada teléfono guarda una copia para seguir andando sin conexión. Las fotos de los tickets quedan en el teléfono donde se cargaron.',
       fallo: 'No se pudo guardar. Revisá la conexión y probá de nuevo.',
-      version: 'Libreta del hogar · versión 2.4.0 (2026-10-13)',       // el número y la fecha los pone armar.js
+      version: 'Libreta del hogar · versión 2.4.1 (2026-10-13)',       // el número y la fecha los pone armar.js
     },
     /* Devuelve { db, permiso } si en este teléfono ya hay una cuenta con su hogar. Si no, { puerta, alEntrar }:
        la app muestra la entrada y `alEntrar` se cumple cuando se entra a un hogar. null: sin conexión. */
@@ -3563,7 +3563,7 @@ const Cerca = (() => {
   // Lo que se cuenta la primera vez (y cuando se lo pide desde Ajustes).
   const TUTORIAL_BASE = [
     ['compras', 'Tu lista de compras, sola', 'Cargá lo que hay en casa escaneando el código de barras. La libreta aprende cada cuánto comprás cada cosa y arma la lista: la de la compra grande y la del día a día. Si querés más precisión, tocá − cuando se termina algo; no hace falta.'],
-    ['escanear', 'Escaneá el precio en la góndola', 'En el súper, tocá «Escanear un precio» y apuntá al código de barras: ves al instante cuánto lo pagaste la última vez y si está bien de precio. Con un toque lo anotás.'],
+    ['escanear', '¿Está a buen precio?', 'En el súper, tocá «Comparar precio» en Compras y escaneá el producto: ves al instante cuánto lo pagaste la última vez y si cerca está más barato. Con un toque anotás el precio, lo lleves o no.'],
     ['familia', 'Toda la familia en el mismo hogar', 'Cada persona entra con su cuenta de Google y se suma con un código. Lo que anota uno lo ven todos al instante. Antes de salir, «Aviso que voy» le pregunta a la familia si falta algo.'],
     ['gastos', 'Cuánto gastás y cuánto ahorrás', 'Cada compra queda anotada en Gastos: cuánto se va por mes, en qué y cuánto subió cada cosa. Y en Novedades, cuánto ahorraste gracias a otros hogares.'],
   ];
@@ -4673,7 +4673,7 @@ const Cerca = (() => {
     },
 
     escanear(H) {
-      const titulo = H.codigoPara ? 'Código de barras' : H.modo === 'precio' ? 'Escanear un precio' : 'Escanear producto';
+      const titulo = H.codigoPara ? 'Código de barras' : H.modo === 'precio' ? '¿Está a buen precio?' : 'Escanear producto';
       if (H.estado === 'gondola') return vistaGondola(H);
       if (H.estado === 'suelto') return vistaSuelto(H);
       if (H.estado === 'camara') {
@@ -4720,7 +4720,7 @@ const Cerca = (() => {
         ${H.nota ? h`<p class="error" role="alert">${H.nota}</p>` : ''}
         ${Lector.etiquetas() ? h`<p><strong>Producto nuevo:</strong> foto del frente del envase, para leer el nombre, la marca y el tamaño.</p>
           <p><strong>Uno que ya cargaste:</strong> alcanza con la foto del código de barras, o del frente otra vez.</p>`
-          : H.modo === 'precio' ? h`<p>${viva ? 'Apuntá la cámara al' : 'Sacale una foto al'} <strong>código de barras</strong> del producto que tenés en la mano: te digo cuánto lo pagaste la última vez y si cerca está más barato.</p>`
+          : H.modo === 'precio' ? h`<p>${viva ? 'Apuntá la cámara al' : 'Sacale una foto al'} <strong>código de barras</strong> del producto. Escribí el precio que ves y te digo si conviene y dónde está más barato cerca.</p>`
           : h`<p>${viva ? 'Apuntá la cámara al' : 'Sacale una foto al'} <strong>código de barras</strong> del producto. Si ya está en la alacena, se le suman unidades; si es nuevo, ${
             Lector.porCodigo ? 'se busca su nombre por el código para que lo confirmes' : 'completás sus datos una sola vez'}.</p>`}
         <div class="elegir">
@@ -5530,7 +5530,7 @@ const Cerca = (() => {
     }
     if (!puedeCerca()) return;
     let pos = C.ultimaPosicion();
-    if (!pos) { try { pos = await C.posicion(true); } catch (e) { pos = null; } }      // se tocó «escanear un precio»: se puede preguntar
+    if (!pos) { try { pos = await C.posicion(true); } catch (e) { pos = null; } }      // se tocó «comparar precio»: se puede preguntar
     let zona = null;
     if (pos) { try { zona = (await C.buscar(pos, [canon])).get(canon) || []; } catch (e) { zona = null; } }
     if (!vivo() || E.hoja !== H || H.estado !== 'gondola') return;
@@ -5670,7 +5670,7 @@ const Cerca = (() => {
 
   function vistaGondola(H) {
     const d = datosGondola(H), hoy = hoyDia(), ver = veredictoGondola(H);
-    return marco('Escanear un precio', h`<form class="form" data-form="gondola" novalidate>
+    return marco('¿Está a buen precio?', h`<form class="form" data-form="gondola" novalidate>
       <div class="conocido"><div><p class="rotulo">${d.p ? 'Está en tu alacena' : 'En la góndola'}</p><p class="conocido-nombre">${H.nombre || 'Producto nuevo'}</p>
         <p class="tenue chico">${d.p ? `hay ${d.p.stock || 0} en casa` : `código ${H.codigo}`}</p></div></div>
       <ul class="gondola-datos">${filasGondola(H, d, hoy)}</ul>
