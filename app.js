@@ -3311,6 +3311,30 @@ const Cerca = (() => {
   }
   const precioDe = (valor, comercio, fecha) => { const n = limpio(comercio).slice(0, 60), o = { valor, comercio: n, ref: refDeComercio(n) }; if (fecha) o.fecha = fecha; return o; };
   const conMapa = () => !!(C && C.conMapa());
+  /* ---------- aportes voluntarios ----------
+     Si config.js trae `aportes` (un link de pago de Mercado Pago y/o un alias), Ajustes invita a apoyar la libreta.
+     Dentro de la app de Google Play no se muestra: ahí los pagos tienen sus propias reglas. */
+  const APORTES = (() => {
+    let a = null;
+    try { if (typeof aportes !== 'undefined' && aportes && typeof aportes === 'object') a = aportes; } catch (e) { /* config.js no lo trae */ }
+    const link = a && typeof a.mercadoPago === 'string' && /^https:\/\/(www\.)?(mpago\.la|mpago\.li|link\.mercadopago\.com\.ar|mercadopago\.com\.ar)\//.test(a.mercadoPago.trim()) ? a.mercadoPago.trim() : '';
+    const alias = a && typeof a.alias === 'string' ? a.alias.trim().slice(0, 40) : '';
+    return { link, alias, hay: !!(link || alias) };
+  })();
+  const enPlay = (() => {
+    try {
+      if (document.referrer.startsWith('android-app://')) sessionStorage.setItem('libreta.play', '1');
+      return sessionStorage.getItem('libreta.play') === '1';
+    } catch (e) { return false; }
+  })();
+  function bloqueAportes() {
+    if (!APORTES.hay || enPlay) return '';
+    return h`<div class="dato aportes"><p class="rotulo">Apoyá la libreta</p>
+      <p>La libreta es gratis y sin publicidad. Si te sirve, podés hacer un aporte voluntario, del monto que quieras: ayuda a pagar el servidor y a seguir mejorándola.</p>
+      <div class="acciones">${APORTES.link ? h`<a class="btn btn-chico btn-principal" href="${APORTES.link}" target="_blank" rel="noopener">Hacer un aporte</a>` : ''}
+        ${APORTES.alias ? h`<button type="button" class="btn btn-chico" data-act="copiar-alias">Copiar el alias</button>` : ''}</div>
+      ${APORTES.alias ? h`<p class="tenue chico">Alias de Mercado Pago: <strong>${APORTES.alias}</strong></p>` : ''}</div>`;
+  }
   const notaComercio = nombre => (refDeComercio(nombre) ? 'Ubicado en el mapa.' : limpio(nombre) ? 'Tocá el pin para ubicarlo en el mapa.' : '');
   function campoComercio(id, k, valor, rotulo, sugerido) {
     const mapa = conMapa(), ubicado = mapa && !!refDeComercio(valor);
@@ -4180,6 +4204,7 @@ const Cerca = (() => {
         <div class="hoja-pie" data-escribe><button type="submit" class="btn btn-principal">Guardar</button></div>
         ${puedeCerca() ? bloqueZona() : ''}
         ${Datos.hogar ? bloqueHogar(H) : ''}
+        ${bloqueAportes()}
         ${!Datos.copia ? h`<p class="tenue chico">${Datos.textos.donde}</p>` : h`<div class="dato"><span>${Datos.textos.donde}</span>${Lector.textos.consulta ? h`<span>${Lector.textos.consulta}</span>` : ''}
           ${H.errorCopia ? h`<p class="error" role="alert">${H.errorCopia}</p>` : ''}
           ${H.copia ? h`<p>${H.copia.n.suma ? h`<strong>Se suma a lo que ya hay en el hogar</strong> lo de la copia` : h`<strong>Restaurar reemplaza todo lo que hay ahora</strong> por lo de la copia`}: ${H.copia.n.productos} ${N.plural(H.copia.n.productos, 'producto', 'productos')} y ${H.copia.n.tickets} ${N.plural(H.copia.n.tickets, 'gasto', 'gastos')}. Las fotos de los tickets no van en la copia.</p>
@@ -5324,6 +5349,11 @@ const Cerca = (() => {
       });
     },
     'sumar-marcados'() { abrirCompra(); },
+    'copiar-alias'() {
+      let p;
+      try { p = navigator.clipboard.writeText(APORTES.alias); } catch (e) { p = Promise.reject(e); }
+      p.then(() => avisar(`Alias copiado: ${APORTES.alias}. ¡Gracias!`), () => avisar(`El alias es ${APORTES.alias}`));
+    },
     mes(el) { E.mes = el.dataset.mes; renderGastos(); const g = $$('#ga-cuerpo [data-act="mes"]').find(x => x.dataset.mes === E.mes); if (g) g.focus({ preventScroll: true }); },
     'mes-mover'(el) { E.mes = N.sumarMes(E.mes, +el.dataset.d); renderGastos(); const b = $(`#ga-cuerpo [data-act="mes-mover"][data-d="${el.dataset.d}"]`); if (b && !b.disabled) b.focus({ preventScroll: true }); },
     'subir-ticket'() {

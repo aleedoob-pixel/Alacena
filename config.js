@@ -23,6 +23,15 @@ const firebaseConfig = {
    Para apagarlo (los comercios se anotan a mano y no hay precios de la zona), poné false. */
 const mapasLibres = true;
 
+/* Aportes voluntarios (optativo).
+
+   Si ponés un link de pago de Mercado Pago o tu alias, Ajustes invita a apoyar la libreta con un aporte.
+   Dentro de la app de Google Play no se muestra. Dejalos vacíos para no mostrar nada. */
+const aportes = {
+  mercadoPago: "https://link.mercadopago.com.ar/libretadelhogar",
+  alias: ""
+};
+
 /* Quién responde por esta app (obligatorio para publicarla en Google Play).
 
    Lo muestra la página de privacidad (privacidad.html), que es la que hay que declarar en la tienda.
