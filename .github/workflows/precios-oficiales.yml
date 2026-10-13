@@ -1,0 +1,51 @@
+# Precios oficiales de los supermercados (SEPA) para la Libreta del hogar.
+# Todos los días baja el archivo de «Precios Claros - Base SEPA» (datos abiertos del Estado argentino), lo prepara
+# por zona con herramientas/sepa.js y lo publica en la rama «datos» de este repositorio (reemplazando la anterior,
+# sin historia, para que el repositorio no crezca). La app lo lee de
+#   https://raw.githubusercontent.com/<usuario>/<repositorio>/datos/sepa/
+# Se puede correr a mano desde la pestaña Actions → «Precios oficiales» → «Run workflow».
+name: Precios oficiales
+
+on:
+  schedule:
+    - cron: "30 22 * * *"     # 19:30 en la Argentina: el portal suele publicar a la tarde
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: precios-oficiales
+  cancel-in-progress: false
+
+jobs:
+  sepa:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: herramientas
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Bajar y preparar los precios
+        id: preparar
+        run: |
+          set +e
+          node --max-old-space-size=6000 herramientas/sepa.js salida/sepa
+          codigo=$?
+          if [ $codigo -eq 3 ]; then echo "::notice::El portal todavía no publicó el archivo de hoy (o no contestó). Se deja el de ayer."; echo "publicar=no" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ $codigo -ne 0 ]; then exit $codigo; fi
+          echo "publicar=si" >> "$GITHUB_OUTPUT"
+      - name: Publicar en la rama «datos»
+        if: steps.preparar.outputs.publicar == 'si'
+        run: |
+          cd salida
+          git init -q -b datos
+          git config user.name "libreta-precios"
+          git config user.email "libreta-precios@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Precios oficiales $(date -u +%F)"
+          git push -q -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" datos
+          du -sh sepa
