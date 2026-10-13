@@ -489,6 +489,34 @@ const Nucleo = (() => {
     return String(s == null ? '' : s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
       .replace(/(\d)[.,](\d)/g, '$1_$2').replace(/[^a-z0-9_]+/g, ' ').replace(/(\d)([a-z])/g, '$1 $2').trim();
   }
+  /* Las palabras que importan de un nombre, en una forma común: sin acentos, sin las palabras chicas, en singular y
+     sin letras dobles. «Pizzetas de muzzarella» → ['pizeta', 'muzarela']. Sirve para buscar y para comparar nombres. */
+  const VACIAS = new Set(['de', 'del', 'la', 'el', 'los', 'las', 'con', 'y', 'e', 'en', 'a', 'al', 'para', 'x', 'sin', 'un', 'una', 'por']);
+  function raices(s) {
+    return norm(s).split(/[^a-z0-9]+/).filter(w => w && !VACIAS.has(w)).map(w => {
+      if (/^\d/.test(w)) return w;
+      if (w.length > 4 && /[nrld]es$/.test(w)) w = w.slice(0, -2);
+      else if (w.length > 3 && /[^s]s$/.test(w)) w = w.slice(0, -1);
+      return w.replace(/(.)\1+/g, '$1');
+    });
+  }
+  // Si lo buscado (sus raíces) está en ese texto: cada palabra buscada es una del texto, el comienzo de una (desde 4
+  // letras) o una con una letra de diferencia (desde 5). «pizeta» encuentra «Pizzetas»; «jamon», «Jamón cocido»;
+  // «pan» no encuentra «panceta».
+  function distancia1(a, b) {
+    if (Math.abs(a.length - b.length) > 1) return false;
+    let i = 0, j = 0, dif = 0;
+    while (i < a.length && j < b.length) {
+      if (a[i] === b[j]) { i++; j++; continue; }
+      if (++dif > 1) return false;
+      if (a.length > b.length) i++; else if (b.length > a.length) j++; else { i++; j++; }
+    }
+    return dif + (a.length - i) + (b.length - j) <= 1;
+  }
+  function coincide(buscadas, texto) {
+    const ws = raices(texto);
+    return buscadas.length > 0 && buscadas.every(q => ws.some(w => w === q || (q.length >= 4 && w.startsWith(q)) || (q.length >= 5 && distancia1(q, w))));
+  }
   const fichas = s => norm(s).split(' ').map(t => UNIDADES[t] || t).filter(t => t.length > 1 || /[\dlgu]/.test(t));
   function parecido(a, b) {
     const A = new Set(fichas(a)), B = new Set(fichas(b));
@@ -733,7 +761,7 @@ const Nucleo = (() => {
     CATS, CATS_ALACENA, ORDEN_CATS, VENTANA,
     hoyISO, isoDe, fechaValida, diaDe, isoDeDia, mesDe, sumarMes, diasDelMes, soloMes, nombreMes, mesCorto, fechaCorta, fechaLarga, diaSemana,
     plata, plataCorta, num, aNumero, campoPlata, redondear2,
-    norm, parecido, textoProducto, buscarParecido, mayuscula, plural,
+    norm, raices, coincide, parecido, textoProducto, buscarParecido, mayuscula, plural,
     precios, aplicarMovs, quitarPrecio, analizar, FRECUENCIAS, esDiario, diarioPorCategoria, horizonteDe, ritmoTexto, alcanzaTexto, razon, situacion, listaCompras,
     repartoTicket, totalesPorMes, gastoHasta, porCategoria, escala,
   };
@@ -2105,6 +2133,15 @@ const Datos = (() => {
      identificador de Google Maps y dónde queda) y la zona. Si algo de esto falla, la libreta sigue igual:
      son un extra, no datos del hogar. */
   const precios = {
+    // Todos los de esas zonas (hasta `tope` por tanda de 30 zonas), para el buscador.
+    async deZonas(zonas, tope) {
+      const { fs, db: base } = F, out = [];
+      for (let i = 0; i < zonas.length; i += 30) {
+        const s = await conTope(fs.getDocs(fs.query(fs.collection(base, 'precios'), fs.where('z', 'in', zonas.slice(i, i + 30)), fs.limit(tope || 600))), 20000);
+        for (const d of s.docs) out.push(Object.assign({ id: d.id }, d.data()));
+      }
+      return out;
+    },
     // claves: ['zona_código', …]. Devuelve [{ id, z, e, k, p, d, c, la, lo, v, x }].
     async buscar(claves) {
       const { fs, db: base } = F, out = [];
@@ -2114,12 +2151,16 @@ const Datos = (() => {
       }
       return out;
     },
-    /* r: { z, e, k, p, d, c, la, lo, v, n, h, qs, qn }. Va en cola, como todo: si no hay conexión, sale cuando vuelve.
+    /* r: { z, e, k, p, d, c, la, lo, v, n, h, qs, qn, t, g }. `e` es el código de barras o, sin código, «n-» y el nombre (`t`). Va en cola, como todo: si no hay conexión, sale cuando vuelve.
        Contesta si quedó anotado: false si el servidor lo rechazó; true si lo aceptó o si todavía está en cola.
        `x` es el momento desde el que Firestore lo puede borrar solo (dos días después de vencido). */
     aportar(r) {
       const dato = { z: String(r.z), e: String(r.e), ze: `${r.z}_${r.e}`, k: String(r.k), p: +r.p, d: Math.round(r.d), c: Math.round(r.c) || 1, la: +r.la, lo: +r.lo, v: Math.round(r.v),
         n: String(r.n || 'Comercio').slice(0, 60), h: String(r.h || '').slice(0, 40), qs: Math.max(0, Math.round(+r.qs || 0)), qn: Math.max(0, Math.round(+r.qn || 0)) };
+      // qué producto es, en palabras (para buscarlo; sin código de barras, es lo único que lo nombra) y su categoría
+      const t = String(r.t || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+      if (t.length >= 2) dato.t = t;
+      if (/^[a-z]{3,12}$/.test(r.g || '')) dato.g = r.g;
       let envio;
       try { dato.x = F.fs.Timestamp.fromMillis((dato.v + 2) * 864e5); envio = F.fs.setDoc(F.fs.doc(F.db, 'precios', `${dato.ze}_${dato.k}`), dato); }
       catch (e) { return Promise.resolve(false); }
@@ -2261,7 +2302,7 @@ const Datos = (() => {
       sinConexion: 'No se pudo abrir la conexión con el servidor. Revisá internet y recargá la página.',
       donde: 'Los datos de este hogar se guardan en Firebase, un servicio de Google, y los ven solo sus integrantes. Cada teléfono guarda una copia para seguir andando sin conexión. Las fotos de los tickets quedan en el teléfono donde se cargaron.',
       fallo: 'No se pudo guardar. Revisá la conexión y probá de nuevo.',
-      version: 'Libreta del hogar · versión 2.3.0 (2026-10-13)',       // el número y la fecha los pone armar.js
+      version: 'Libreta del hogar · versión 2.4.0 (2026-10-13)',       // el número y la fecha los pone armar.js
     },
     /* Devuelve { db, permiso } si en este teléfono ya hay una cuenta con su hogar. Si no, { puerta, alEntrar }:
        la app muestra la entrada y `alEntrar` se cumple cuando se entra a un hogar. null: sin conexión. */
@@ -2418,6 +2459,28 @@ No inventes nada que no esté en la foto.`;
     };
   }
 
+  /* ---------- qué es un producto sin código ---------- */
+  function promptProducto() {
+    return `Sos el lector de productos de una libreta de compras que comparten familias de Argentina. La foto muestra algo que se compró o se está por comprar, casi siempre sin envase de marca ni código de barras: comida de rotisería o de panadería, fruta, verdura, carne, fiambre, algo suelto o hecho en el negocio.
+
+Respondé SOLO con un objeto JSON, con esta forma:
+{"esProducto": true, "nombre": "", "categoria": "", "precio": 0}
+
+- esProducto: false si en la foto no se ve nada que se compre.
+- nombre: qué es, corto y genérico, como lo pediría una persona en el negocio, de hasta 40 caracteres. Sin marca, salvo que se lea en una etiqueta. Ejemplos: "Pizza de muzzarella con morrón", "Pan francés", "Banana", "Milanesa de nalga", "Empanada de carne".
+- categoria: una de estas claves: ${N.CATS_ALACENA.join(', ')}.
+- precio: si en la foto se ve un cartel o una etiqueta con el precio de ese producto, el número (con punto decimal, sin símbolo); si no, 0.
+
+No inventes nada que no se vea en la foto.`;
+  }
+  function normalizarProducto(r) {
+    if (!r || typeof r !== 'object' || Array.isArray(r)) return null;
+    const nombre = N.mayuscula(texto(r.nombre, 60));
+    let precio = N.aNumero(r.precio);
+    if (!isFinite(precio) || precio <= 0 || precio > 1e8) precio = 0;
+    return { esProducto: r.esProducto !== false && nombre.length >= 2, nombre, categoria: N.CATS_ALACENA.includes(r.categoria) ? r.categoria : 'otros', precio: N.redondear2(precio) };
+  }
+
   /* ---------- qué cocinar ---------- */
   const COMIDAS = {
     comida: 'un almuerzo o una cena',
@@ -2479,6 +2542,11 @@ ${lista.map((x, i) => `${i + 1}. ${x.texto} · ${x.cant} · ${x.cat}`).join('\n'
       const r = await pedir(promptPromo(medios, hoy), foto, opciones && opciones.signal);
       return normalizarPromo(r, medios, hoy);
     },
+    // Dice qué es el producto de la foto (un Blob JPEG), para los que no tienen código de barras.
+    async producto(foto, opciones) {
+      const r = await pedir(promptProducto(), foto, opciones && opciones.signal);
+      return normalizarProducto(r);
+    },
     // Propone comidas. `lista`: lo que hay en la alacena [{ id, texto, cant, cat }], lo fresco primero.
     async recetas(lista, opciones) {
       const o = Object.assign({ comida: 'comida', personas: 4, anteriores: [] }, opciones || {});
@@ -2502,7 +2570,7 @@ ${lista.map((x, i) => `${i + 1}. ${x.texto} · ${x.cant} · ${x.cat}`).join('\n'
       }
     },
     get apagada() { return apagada; },
-    interno: { promptPromo, normalizarPromo, promptRecetas, normalizarRecetas, leerJSON, clase },
+    interno: { promptProducto, normalizarProducto, promptPromo, normalizarPromo, promptRecetas, normalizarRecetas, leerJSON, clase },
   };
 })();
 
@@ -2861,7 +2929,7 @@ const Cerca = (() => {
     for (const d of docs) {
       if (!(d.v >= hoy) || !(d.d <= hoy + 1) || !(d.p > 0)) { if (d.v < hoy - 2) Datos.precios.borrar(d.id); continue; }
       if (!crudos.has(d.e)) crudos.set(d.e, []);
-      crudos.get(d.e).push({ precio: +d.p, k: String(d.k), lat: +d.la, lon: +d.lo, dia: +d.d, cuantos: +d.c || 1, comercio: typeof d.n === 'string' ? d.n : '', hogar: typeof d.h === 'string' ? d.h : '', si: +d.qs || 0, no: +d.qn || 0 });
+      crudos.get(d.e).push({ precio: +d.p, k: String(d.k), texto: typeof d.t === 'string' ? d.t : '', lat: +d.la, lon: +d.lo, dia: +d.d, cuantos: +d.c || 1, comercio: typeof d.n === 'string' ? d.n : '', hogar: typeof d.h === 'string' ? d.h : '', si: +d.qs || 0, no: +d.qn || 0 });
     }
     try { await sumarOficiales(pos, codigos, crudos); } catch (e) { /* sin los oficiales esta vez */ }
     for (const [e, l] of crudos) { const o = A.ordenarCerca(l, pos, RADIO_ZONA); if (o.length) out.set(e, o); }
@@ -2917,7 +2985,8 @@ const Cerca = (() => {
       }
     }
   }
-  /* Lo que este hogar pagó, para la zona. items: [{ codigo, precio, reco }] (reco: 1 lo recomienda, -1 no, 0 nada)
+  /* Lo que este hogar pagó, para la zona. items: [{ codigo, precio, reco, texto }] (codigo: el de barras o, sin
+     código, «n-» y el nombre; texto: el nombre, para esos) (reco: 1 lo recomienda, -1 no, 0 nada)
      ref: el comercio · dia: el de la compra · quien: el nombre público del hogar ('' si no eligió ninguno).
      Devuelve cuántos precios quedaron anotados (los que el servidor rechaza no cuentan). */
   const CLAVE_VOTOS = 'libreta.votos';
@@ -2937,10 +3006,39 @@ const Cerca = (() => {
       // cada hogar cuenta una sola vez su recomendación de un producto en un comercio
       let qs = ya ? Math.min(9999, +ya.qs || 0) : 0, qn = ya ? Math.min(9999, +ya.qn || 0) : 0;
       if (it.reco && !votos.has(idDoc)) { if (it.reco > 0) qs = Math.min(9999, qs + 1); else qn = Math.min(9999, qn + 1); votos.add(idDoc); }
-      return Datos.precios.aportar({ z, e: it.codigo, k: ref, p: it.precio, d: dia, c, la: l.lat, lo: l.lon, v: vence, n: l.nombre.slice(0, 60) || 'Comercio', h: hogar, qs, qn });
+      return Datos.precios.aportar({ z, e: it.codigo, k: ref, p: it.precio, d: dia, c, la: l.lat, lo: l.lon, v: vence, n: l.nombre.slice(0, 60) || 'Comercio', h: hogar, qs, qn, t: it.texto || '', g: it.cat || '' });
     }));
     guardar(CLAVE_VOTOS, [...votos].slice(-500));
     return hechos.filter(Boolean).length;
+  }
+
+  /* ---------- el buscador ----------
+     Lo que la zona compartió que coincide con lo buscado («pizzeta», «jamón», «verdura»): por el nombre del producto o
+     por su categoría. Uno por producto y comercio, el más barato primero. Las promos de la zona que coincidan, aparte. */
+  async function buscarTexto(pos, consulta) {
+    const q = N.raices(consulta), hoy = N.diaDe(N.hoyISO());
+    if (!q.length) return { precios: [], promos: [] };
+    const zonas = A.celdasCerca(pos.lat, pos.lon, RADIO_ZONA);
+    let docs;
+    try { docs = await Datos.precios.deZonas(zonas, 600); }
+    catch (e) {
+      const crudo = String((e && (e.code || e.message)) || '');
+      throw { code: 'cerca/zona', crudo, texto: 'No se pudieron traer los precios de tu zona. Revisá la conexión.' };
+    }
+    const m = new Map();
+    for (const d of docs) {
+      if (!(d.v >= hoy) || !(d.d <= hoy + 1) || !(d.p > 0) || typeof d.t !== 'string' || !A.puntoValido(d.la, d.lo)) continue;
+      if (!N.coincide(q, d.t) && !(d.g && N.CATS[d.g] && N.coincide(q, N.CATS[d.g]))) continue;
+      const dist = A.distancia(pos.lat, pos.lon, d.la, d.lo);
+      if (dist > RADIO_ZONA) continue;
+      const k = d.e + '|' + d.k, o = { e: d.e, texto: d.t, precio: +d.p, k: String(d.k), lat: +d.la, lon: +d.lo, dist, dia: +d.d, cuantos: +d.c || 1, comercio: typeof d.n === 'string' ? d.n : '', hogar: typeof d.h === 'string' ? d.h : '', si: +d.qs || 0, no: +d.qn || 0 };
+      const ya = m.get(k);
+      if (!ya || o.dia > ya.dia) m.set(k, o);
+    }
+    const precios = [...m.values()].sort((a, b) => a.precio - b.precio || a.dist - b.dist).slice(0, 40);
+    let lp = [];
+    try { lp = (await promos(pos)).filter(p => N.coincide(q, `${p.t} ${p.n}`)); } catch (e) { lp = []; }
+    return { precios, promos: lp.slice(0, 10) };
   }
 
   /* ---------- promos de la zona ----------
@@ -3080,7 +3178,7 @@ const Cerca = (() => {
     },
     posicion, ultimaPosicion, olvidarPosicion,
     cercanos, sugerir, ubicarSugerido, detalle, ubicacion, recordar, marcar, enlace, conocido: deMemoria, conOficiales: () => !!OFICIALES,
-    buscar, aportar, limpiar, dibujar, promos, cargarPromo,
+    buscar, buscarTexto, aportar, limpiar, dibujar, promos, cargarPromo,
     RADIO_ZONA,
   };
 })();
@@ -3276,6 +3374,7 @@ const Cerca = (() => {
     };
     if (d.marcaFija) doc.marcaFija = true;
     if (d.pedido > 0) doc.pedido = d.pedido;
+    if (d.suelto) doc.suelto = true;
     if (d.diario === true || d.diario === false) doc.diario = d.diario;
     const ref = E.db.collection('productos').doc();
     await escribir(() => ref.set(doc));
@@ -3847,7 +3946,24 @@ const Cerca = (() => {
      Lo que otros hogares pagaron cerca por los mismos productos (se los reconoce por el código de barras).
      Hace falta saber, más o menos, dónde está el teléfono. */
   const puedeCerca = () => conMapa() && !!Datos.precios && !!E.db;
-  const codigoDe = p => (p && p.codigo && Barras.gtinValido(String(p.codigo).replace(/\D/g, '')) ? Barras.canonico(p.codigo) : '');
+  /* Con qué se comparte un producto con la zona: su código de barras o, si no tiene (pan, fruta, comida de rotisería)
+     y se cargó como «sin código», su nombre hecho clave: «Pizza de muzzarella con morrón» → «n-piza-muzarela-moron».
+     Sin las palabras chicas, en singular y sin letras dobles (N.raices), para que «Papas» y «papa» den lo mismo. */
+  function claveNombre(texto) {
+    const ws = N.raices(texto);
+    let k = '';
+    for (const w of ws) { if ((k ? k.length + 1 : 0) + w.length > 40) break; k += (k ? '-' : '') + w; }
+    return k.length >= 2 ? 'n-' + k : '';
+  }
+  const textoSuelto = p => [p.nombre, p.marca, p.presentacion].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim().slice(0, 60);
+  const conBarras = p => !!(p && p.codigo && Barras.gtinValido(String(p.codigo).replace(/\D/g, '')));
+  const codigoDe = p => (conBarras(p) ? Barras.canonico(p.codigo) : p && p.suelto && p.nombre ? claveNombre(textoSuelto(p)) : '');
+  // El producto de la alacena, sin código de barras, que corresponde a esa clave (o null).
+  function productoSuelto(clave) {
+    if (!clave) return null;
+    for (const [id, p] of V.prods) if (!p.ejemplo && !conBarras(p) && (claveNombre(textoSuelto(p)) === clave || claveNombre(p.nombre) === clave)) return id;
+    return null;
+  }
   // ¿Ese precio de la zona lo cargó este mismo hogar? Es suyo si está en su historial: el mismo comercio, el mismo día, el mismo precio.
   const esPropio = (p, o) => N.precios(p).some(e => !!e[3] && e[3] === o.k && e[0] === o.dia && Math.abs(e[1] - o.precio) < 0.006);
   // Los precios de la zona para un producto de este hogar, con el nombre que el hogar le da a cada comercio.
@@ -3889,7 +4005,7 @@ const Cerca = (() => {
     const hoy = hoyDia(), dia = fechaISO && N.fechaValida(fechaISO) ? N.diaDe(fechaISO) : hoy;
     if (dia < hoy - 3 || dia > hoy) return null;                       // una compra vieja no es novedad para la zona
     const ref = refDeComercio(comercio), con = [];
-    for (const it of items) { const p = E.prod.get(it.id), codigo = codigoDe(p); if (p && !p.ejemplo && codigo && it.precio > 0) con.push({ id: it.id, nombre: p.nombre, codigo, precio: N.redondear2(it.precio), cant: it.cant || 1, reco: recoDe(p) }); }
+    for (const it of items) { const p = E.prod.get(it.id), codigo = codigoDe(p); if (p && !p.ejemplo && codigo && it.precio > 0) con.push({ id: it.id, nombre: p.nombre, codigo, precio: N.redondear2(it.precio), cant: it.cant || 1, reco: recoDe(p), texto: textoSuelto(p), cat: catDe(p) }); }
     if (!con.length) return null;
     const out = { baratos: [], compartidos: 0, preguntar: false, ref, porId: new Map(), ahorro: 0 };
     if (ref && E.ajustes.compartir === true) {
@@ -3985,7 +4101,7 @@ const Cerca = (() => {
     const of = ofertasCerca(), hayAlgo = V.cerca.size > 0, comparte = E.ajustes.compartir;
     // lo que el hogar decidió sobre compartir sus precios; mientras no lo decida, se le pregunta acá
     const compartir = comparte == null
-      ? h`<div class="nota compartir"><p><strong>¿Compartir con tu zona los precios que anotás?</strong> Va el producto, el precio, la fecha y el comercio, y el nombre público de tu hogar si elegiste uno en Ajustes. Nunca tu nombre, tu email ni tu dirección. Sirve cuando el comercio está ubicado en el mapa y el producto tiene código de barras.</p>
+      ? h`<div class="nota compartir"><p><strong>¿Compartir con tu zona los precios que anotás?</strong> Va el producto, el precio, la fecha y el comercio, y el nombre público de tu hogar si elegiste uno en Ajustes. Nunca tu nombre, tu email ni tu dirección. Sirve cuando el comercio está ubicado en el mapa y el producto tiene código de barras o lo cargaste con «No tiene código».</p>
           <div class="acciones"><button type="button" class="btn btn-chico" data-act="compartir-no">No</button><button type="button" class="btn btn-chico btn-principal" data-act="compartir-si">Sí, compartir</button></div></div>`
       : h`<p class="tenue chico">${comparte ? 'Tu hogar comparte sus precios con la zona, sin nombres.' : 'Tu hogar no comparte sus precios.'} Se cambia en Ajustes.</p>`;
     return h`<div class="bloque cerca"><h2 class="bloque-t">Precios cerca tuyo</h2>
@@ -4028,6 +4144,43 @@ const Cerca = (() => {
   }
   const filaPromo = x => h`<li><span class="oferta-nombre">${x.n}</span><strong class="oferta-precio">${x.pct ? `${x.pct} %` : ''}</strong>
     <span class="oferta-detalle">${[x.t, x.m && x.m !== 'Todos los medios' && !N.norm(x.t).includes(N.norm(x.m)) ? `con ${x.m}` : '', diasTexto(x.dias), `hasta el ${N.fechaCorta(N.isoDeDia(x.hasta))}`, x.dist != null ? `a ${A.distTexto(x.dist)}` : '', x.h ? `la cargó ${x.h}` : ''].filter(Boolean).join(' · ')}</span></li>`;
+  /* El buscador: qué cargaron los hogares de la zona que coincide con lo buscado, del más barato al más caro. */
+  function bloqueBuscador() {
+    if (!puedeCerca()) return '';
+    const B = E.busca || {}, hoy = hoyDia();
+    let res = '';
+    if (B.estado === 'buscando') res = cargando('Buscando cerca…');
+    else if (B.estado === 'error') res = h`<p class="nota gris">${B.error}</p>`;
+    else if (B.estado === 'listo') {
+      res = !B.precios.length && !B.promos.length
+        ? h`<p class="tenue">Nadie cargó «${B.q}» cerca en los últimos días. Cuando lo compres, anotá el precio y sos el primero.</p>`
+        : h`${B.precios.length ? h`<ul class="ofertas buscados">${B.precios.map((o, i) => h`<li><span class="oferta-nombre">${o.texto}</span><strong class="oferta-precio${i ? '' : ' verde'}">${N.plata(o.precio)}</strong>
+            <span class="oferta-detalle">${detalleOferta(o, hoy)}</span></li>`)}</ul>` : ''}
+          ${B.promos.length ? h`<p><strong>Promos que coinciden:</strong></p><ul class="ofertas">${B.promos.map(filaPromo)}</ul>` : ''}
+          <p class="tenue chico">Los cargaron hogares de tu zona${B.precios.length ? ', del más barato al más caro' : ''}. Pueden haber cambiado.</p>`;
+    }
+    return h`<div class="bloque buscador-cerca"><h2 class="bloque-t">Buscar precios cerca</h2>
+      <form class="buscador" data-form="buscar-cerca" role="search"><label class="buscar">${ico('buscar')}<input type="search" id="bc-q" value="${E.buscaEscrito != null ? E.buscaEscrito : B.q || ''}" placeholder="Pizzeta, jamón, tomate…" enterkeyhint="search" autocomplete="off" maxlength="60" aria-label="Qué producto buscás"></label>
+        <button type="submit" class="btn btn-principal">Buscar</button></form>
+      <div id="bc-res" aria-live="polite">${res}</div></div>`;
+  }
+  async function buscarCerca() {
+    const q = limpio(($('#bc-q') || {}).value || '').slice(0, 60);
+    if (!q || !puedeCerca()) return;
+    if (!N.raices(q).length) { E.busca = { q, estado: 'error', error: 'Escribí qué producto buscás: por ejemplo «pizzeta».' }; renderNovedades(); return; }
+    const turno = (E.buscaTurno || 0) + 1;
+    E.buscaTurno = turno;
+    E.busca = { q, estado: 'buscando' };
+    renderNovedades();
+    let pos = C.ultimaPosicion();
+    if (!pos) { try { pos = await C.posicion(true); } catch (e) { pos = null; } }
+    let r = null, error = '';
+    if (!pos) error = 'Para buscar cerca hace falta tu ubicación: tocá «Usar mi ubicación» o permitila en el navegador.';
+    else { try { r = await C.buscarTexto(pos, q); } catch (e) { error = (e && e.texto) || 'No se pudo buscar. Revisá la conexión.'; } }
+    if (E.buscaTurno !== turno) return;
+    E.busca = r ? { q, estado: 'listo', precios: r.precios, promos: r.promos } : { q, estado: 'error', error };
+    if (E.tab === 'novedades') { renderNovedades(); const el = $('#bc-res'); if (el) el.scrollIntoView({ block: 'nearest' }); }
+  }
   function bloquePromos() {
     if (!puedeCerca() || !Datos.promos || E.cerca.estado === 'sin') return '';
     const P = E.promos, dow = new Date().getDay(), vig = promosVigentes(), hoyL = vig.filter(x => promoDeHoy(x, dow)), otras = vig.filter(x => !promoDeHoy(x, dow));
@@ -4079,7 +4232,7 @@ const Cerca = (() => {
     for (const x of V.compras) { const c = ((V.plan && V.plan.porId.get(x.id)) || []).find(k => k.ahorro > 0); if (c) consejos.push({ x, c }); }
     consejos.sort((a, b) => b.c.ahorro - a.c.ahorro);
     $('#no-resumen').textContent = nov.cambios.length ? `${nov.cambios.length} ${N.plural(nov.cambios.length, 'producto cambió', 'productos cambiaron')} de precio en los últimos 45 días` : '';
-    const partes = [bloqueAhorro(), bloqueCanasta(inf), bloquePromos(), bloqueCercaNovedades()];
+    const partes = [bloqueBuscador(), bloqueAhorro(), bloqueCanasta(inf), bloquePromos(), bloqueCercaNovedades()];
     if (consejos.length) {
       partes.push(h`<div class="bloque"><h2 class="bloque-t">Para la próxima compra</h2>
         <ul class="consejos">${consejos.slice(0, 8).map(k => h`<li><strong>${k.x.p.nombre}</strong><span class="compra-consejo ${k.c.tipo}">${k.c.texto}</span></li>`)}</ul>
@@ -4522,10 +4675,12 @@ const Cerca = (() => {
     escanear(H) {
       const titulo = H.codigoPara ? 'Código de barras' : H.modo === 'precio' ? 'Escanear un precio' : 'Escanear producto';
       if (H.estado === 'gondola') return vistaGondola(H);
+      if (H.estado === 'suelto') return vistaSuelto(H);
       if (H.estado === 'camara') {
         return marco(titulo, h`<div class="hoja-cuerpo">
           <div class="visor"><video id="visor-video" playsinline muted autoplay aria-label="Lo que ve la cámara"></video><div class="visor-guia" aria-hidden="true"></div></div>
           <p class="leyendo-paso" id="visor-estado" role="status"><span class="giro"></span><span>Abriendo la cámara…</span></p>
+          ${H.modo === 'precio' ? enlaceSinCodigo : ''}
           <div class="hoja-pie"><button type="button" class="btn" data-act="cerrar">Cancelar</button>
             <button type="button" class="btn" data-act="${H.codigoPara ? 'foto-codigo' : 'foto-prod-gal'}">${ico('imagen')}Usar una foto</button></div></div>`);
       }
@@ -4576,7 +4731,7 @@ const Cerca = (() => {
         ${tactil ? '' : h`<p class="tenue chico">También se puede arrastrar o pegar una imagen acá.${viva ? '' : Datos.camaraEnVivo ? ' Desde el celular se escanea directamente con la cámara.' : ' Desde el celular, este mismo botón abre la cámara.'}</p>`}
         ${!Lector.etiquetas() && !Lector.porCodigo && Lector.textos.sinEtiquetas ? h`<p class="nota gris">${Lector.textos.sinEtiquetas}</p>` : ''}
         ${camaraPosible() && !sinCamara && (camaraFallo || camaraDudosa) ? h`<button type="button" class="enlace" data-act="camara">${camaraFallo ? 'Probar la cámara otra vez' : 'Usar la cámara de esta computadora'}</button>` : ''}
-        <button type="button" class="enlace" data-act="producto-nuevo">Cargar a mano, sin foto</button></div>`);
+        ${H.modo === 'precio' ? enlaceSinCodigo : h`<button type="button" class="enlace" data-act="producto-nuevo">Cargar a mano, sin foto</button>`}</div>`);
     },
 
     ticket(H) {
@@ -5400,18 +5555,125 @@ const Cerca = (() => {
     if (d.ult) return { tono: 'verde', texto: v < d.ult[1] * 0.97 ? `Bajó ${A.pct(1 - v / d.ult[1])} desde la última vez. Buen precio.` : 'Igual que la última vez.' };
     return { tono: '', texto: 'Anotalo: así la próxima vez sabés si subió.' };
   }
+  const enlaceSinCodigo = h`<button type="button" class="btn btn-grande sin-codigo" data-act="sin-codigo">No tiene código<small>pan, fruta, verdura, carne, comida de rotisería…</small></button>`;
+  // Lo que se sabe del precio: lo que pagó este hogar la última vez y lo más barato cerca.
+  function filasGondola(H, d, hoy) {
+    return h`${d.ult ? h`<li><span>La última vez lo pagaste</span><strong>${N.plata(d.ult[1])}</strong><small>${[A.haceDias(hoy - d.ult[0]), d.ult[2] ? `en ${d.ult[2]}` : ''].filter(Boolean).join(' · ')}</small></li>` : ''}
+        ${H.estadoZona === 'buscando' ? h`<li>${cargando('Mirando precios cerca…')}</li>`
+          : d.mejor ? h`<li><span>Lo más barato cerca</span><strong class="verde">${N.plata(d.mejor.precio)}</strong><small>${detalleOferta(d.mejor, hoy)}</small></li>`
+            : H.estadoZona === 'sin-ubicacion' ? h`<li><span class="tenue">Para comparar con tu zona, activá tu ubicación en Novedades.</span></li>`
+              : d.hayZona ? h`<li><span class="tenue">Todavía nadie cargó este producto cerca. ¡Sé el primero!</span></li>` : ''}`;
+  }
+  // Un precio de algo sin código de barras: qué es (lo puede decir la IA con una foto), cuánto sale y dónde.
+  function vistaSuelto(H) {
+    const d = datosGondola(H), hoy = hoyDia(), ver = veredictoGondola(H);
+    const hayFilas = !!H.clave && !!(d.ult || d.mejor || d.hayZona || H.estadoZona === 'buscando' || H.estadoZona === 'sin-ubicacion');
+    return marco('Precio sin código', h`<form class="form" data-form="suelto" novalidate>
+      ${hayIA() ? h`<div class="ia-foto" aria-live="polite">${H.leyendo ? cargando('La IA está mirando la foto…') : h`<div class="acciones">
+          <button type="button" class="btn btn-chico${H.aviso ? '' : ' btn-principal'}" data-act="suelto-foto">${ico('camara')}${H.aviso ? 'Otra foto' : 'Sacale una foto'}</button>
+          <button type="button" class="enlace" data-act="suelto-galeria">o elegila de la galería</button></div>`}
+        ${H.aviso ? h`<p class="nota gris chico">${H.aviso}</p>` : h`<p class="tenue chico">La inteligencia artificial te dice qué es (y el precio, si se ve el cartel). Solo se envía la foto.</p>`}</div>`
+        : h`<p class="tenue chico">Para lo que no tiene código de barras: pan, fruta, verdura, carne, comida de rotisería…</p>`}
+      ${campo('Qué es', h`<input type="text" id="s-nombre" data-k="nombre" data-suelto value="${H.nombre}" maxlength="60" autocomplete="off" list="lista-sueltos" placeholder="Pizza de muzzarella">`,
+        H.id ? 'Ya está en tu alacena.' : 'Un nombre corto y común: así lo encuentran los otros hogares.')}
+      ${hayFilas ? h`<ul class="gondola-datos">${filasGondola(H, d, hoy)}</ul>` : ''}
+      ${campo('Precio', h`<input type="text" id="g-precio" data-k="precio" value="${H.precio}" inputmode="decimal" autocomplete="off" placeholder="$">`)}
+      <p class="gondola-veredicto ${ver.tono}" id="g-veredicto" aria-live="polite">${ver.texto}</p>
+      ${campoComercio('g-comercio', 'comercio', H.comercio || '', 'Dónde estás')}
+      ${H.error ? h`<p class="error" role="alert">${H.error}</p>` : ''}
+      <div class="hoja-pie"><button type="submit" class="btn"${atr('disabled', H.ocupado || H.leyendo)}>Solo anotar el precio</button>
+        <button type="button" class="btn btn-principal" data-act="suelto-llevo"${atr('disabled', H.ocupado || H.leyendo)}>Lo llevo</button></div></form>`);
+  }
+  // Con el nombre puesto: si ya está en la alacena y qué precios hay cerca.
+  async function actualizarSuelto(H) {
+    const clave = claveNombre(H.nombre);
+    if (clave === H.clave) return;
+    H.clave = clave; H.id = productoSuelto(clave); H.zona = null;
+    if (H.id) H.cat = catDe(E.prod.get(H.id));
+    H.estadoZona = clave && puedeCerca() ? 'buscando' : 'sin';
+    renderHoja();
+    if (H.estadoZona !== 'buscando') return;
+    let pos = C.ultimaPosicion();
+    if (!pos) { try { pos = await C.posicion(true); } catch (e) { pos = null; } }
+    let zona = null;
+    if (pos) { try { zona = (await C.buscar(pos, [clave])).get(clave) || []; } catch (e) { zona = null; } }
+    if (E.hoja !== H || H.estado !== 'suelto' || H.clave !== clave) return;
+    H.zona = zona ? zona.map(o => Object.assign({}, o, { dist: A.distancia(pos.lat, pos.lon, o.lat, o.lon) })) : null;
+    H.estadoZona = pos ? 'listo' : 'sin-ubicacion';
+    renderHoja();
+  }
+  function pintarSueltos() {
+    let dl = $('#lista-sueltos');
+    if (!dl) { dl = document.createElement('datalist'); dl.id = 'lista-sueltos'; document.body.appendChild(dl); }
+    const ns = V.prods.filter(([, p]) => !p.ejemplo && !conBarras(p)).map(([, p]) => p.nombre).filter(Boolean);
+    dl.innerHTML = val(Array.from(new Set(ns)).slice(0, 60).map(n => h`<option value="${n}"></option>`));
+  }
+  async function fotoSuelto(archivo) {
+    const H = E.hoja;
+    if (!H || H.estado !== 'suelto' || H.leyendo || !hayIA() || !archivo) return;
+    cambiarHoja({ leyendo: true, error: '' });
+    let r = null, falla = null;
+    try {
+      let foto;
+      try { const im = await Imagen.abrir(archivo); try { foto = await Imagen.aBlob(Imagen.lienzo(im, 1280), 0.85); } finally { im.cerrar(); } }
+      catch (e) { throw { code: 'imagen' }; }
+      r = await IA.producto(foto);
+    } catch (e) { falla = e; }
+    if (E.hoja !== H) return;
+    H.leyendo = false;
+    if (falla || !r) { const t = IA.nota(falla); if (t) errorHoja(t); else renderHoja(); return; }
+    if (!r.esProducto) { errorHoja('En esa foto no se ve qué es. Probá con otra o escribilo.'); return; }
+    H.nombre = r.nombre; H.cat = r.categoria;
+    if (r.precio > 0 && !limpio(H.precio)) H.precio = N.plata(r.precio).replace(/^\$\s*/, '');
+    H.aviso = `La IA dice que es «${r.nombre}»${r.precio > 0 ? ` y que sale ${N.plata(r.precio)}` : ''}. Corregilo si hace falta.`;
+    H.clave = null;
+    await actualizarSuelto(H);
+  }
+  async function guardarSuelto(llevo) {
+    const H = E.hoja;
+    if (!H || H.estado !== 'suelto' || H.ocupado || H.leyendo || !puede()) return;
+    const nombre = N.mayuscula(limpio(H.nombre).slice(0, 60)), clave = claveNombre(nombre);
+    const txt = limpio(H.precio), precio = txt ? N.aNumero(txt) : 0, comercio = limpio(H.comercio).slice(0, 60);
+    if (!clave) return errorHoja('Escribí qué es: por ejemplo «Pizza de muzzarella».', 's-nombre');
+    if (!(precio > 0)) return errorHoja(txt ? 'El precio no se entiende. Escribilo así: 1.450,50' : 'Escribí cuánto sale.', 'g-precio');
+    ocupar(true);
+    let id = H.id && E.prod.has(H.id) && claveNombre(textoSuelto(E.prod.get(H.id))) === clave ? H.id : productoSuelto(clave);
+    try {
+      if (id) {
+        const p = E.prod.get(id);
+        if (!p.suelto) { E.prod.set(id, { ...p, suelto: true }); await enCola(id, () => escribir(() => E.db.doc('productos/' + id).update({ suelto: true }))); }
+        if (!await mover(id, { c: llevo ? 1 : 0 }, precioDe(precio, comercio), true)) { if (E.hoja === H) ocupar(false); return; }
+      } else if (llevo) {
+        id = await crearProducto({ nombre, categoria: H.cat, stock: 1, precio, comercio, ref: refDeComercio(comercio), suelto: true });
+      }
+    } catch (e) { if (E.hoja === H) errorHoja(textoFallo(e)); else falloGuardar(e); return; }
+    if (E.hoja !== H) return;
+    if (comercio) recordarComercio(comercio);
+    if (id) {
+      const p = verProd(id) || {};
+      cambiarHoja({ estado: 'hecho', ocupado: false, error: '', fallo: false, sinCodigo: false, cerca: null,
+        texto: llevo ? `${p.nombre}: se sumó 1 a la alacena. Ahora hay ${p.stock}.` : `Precio anotado: ${N.plata(precio)}${comercio ? ` en ${comercio}` : ''}.` });
+      trasCompra([{ id, precio, cant: 1 }], comercio).then(r => { if (r && E.hoja === H && H.estado === 'hecho') { H.cerca = r; renderHoja(); } });
+      return;
+    }
+    // solo el precio de algo que no está en la alacena: sirve para la zona, si el hogar comparte y el comercio está ubicado
+    const ref = refDeComercio(comercio);
+    let n = 0;
+    if (ref && E.ajustes.compartir === true && puedeCerca()) { try { n = await C.aportar([{ codigo: clave, precio, reco: 0, texto: nombre, cat: H.cat }], ref, hoyDia(), E.ajustes.alias, lugarDe(ref)); } catch (e) { n = 0; } }
+    if (E.hoja !== H) return;
+    cambiarHoja({ estado: 'hecho', ocupado: false, error: '', fallo: false, sinCodigo: false, cerca: null,
+      texto: n ? `Precio anotado: ${nombre}, ${N.plata(precio)} en ${comercio}. Ya lo ven los hogares de tu zona. ¡Gracias!`
+        : !ref ? 'Para que ese precio les sirva a otros hogares, ubicá el comercio en el mapa (el botón del pin).'
+          : E.ajustes.compartir !== true ? 'Tu hogar no comparte precios con la zona: se cambia en Ajustes. Como no está en tu alacena, el precio no se guardó.'
+            : 'No se pudo anotar el precio. Probá de nuevo.' });
+  }
+
   function vistaGondola(H) {
     const d = datosGondola(H), hoy = hoyDia(), ver = veredictoGondola(H);
     return marco('Escanear un precio', h`<form class="form" data-form="gondola" novalidate>
       <div class="conocido"><div><p class="rotulo">${d.p ? 'Está en tu alacena' : 'En la góndola'}</p><p class="conocido-nombre">${H.nombre || 'Producto nuevo'}</p>
         <p class="tenue chico">${d.p ? `hay ${d.p.stock || 0} en casa` : `código ${H.codigo}`}</p></div></div>
-      <ul class="gondola-datos">
-        ${d.ult ? h`<li><span>La última vez lo pagaste</span><strong>${N.plata(d.ult[1])}</strong><small>${[A.haceDias(hoy - d.ult[0]), d.ult[2] ? `en ${d.ult[2]}` : ''].filter(Boolean).join(' · ')}</small></li>` : ''}
-        ${H.estadoZona === 'buscando' ? h`<li>${cargando('Mirando precios cerca…')}</li>`
-          : d.mejor ? h`<li><span>Lo más barato cerca</span><strong class="verde">${N.plata(d.mejor.precio)}</strong><small>${detalleOferta(d.mejor, hoy)}</small></li>`
-            : H.estadoZona === 'sin-ubicacion' ? h`<li><span class="tenue">Para comparar con tu zona, activá tu ubicación en Novedades.</span></li>`
-              : d.hayZona ? h`<li><span class="tenue">Todavía nadie cargó este producto cerca. ¡Sé el primero!</span></li>` : ''}
-      </ul>
+      <ul class="gondola-datos">${filasGondola(H, d, hoy)}</ul>
       ${campo('Precio acá', h`<input type="text" id="g-precio" data-k="precio" value="${H.precio}" inputmode="decimal" autocomplete="off" placeholder="$">`)}
       <p class="gondola-veredicto ${ver.tono}" id="g-veredicto" aria-live="polite">${ver.texto}</p>
       ${campoComercio('g-comercio', 'comercio', H.comercio || '', 'Dónde estás')}
@@ -5445,7 +5707,7 @@ const Cerca = (() => {
     // el precio de algo que no está en la alacena: sirve para la zona, si el hogar comparte y el comercio está ubicado
     const ref = refDeComercio(comercio);
     let n = 0;
-    if (ref && E.ajustes.compartir === true && puedeCerca()) { try { n = await C.aportar([{ codigo: H.codigo, precio, reco: 0 }], ref, hoyDia(), E.ajustes.alias, lugarDe(ref)); } catch (e) { n = 0; } }
+    if (ref && E.ajustes.compartir === true && puedeCerca()) { try { n = await C.aportar([{ codigo: H.codigo, precio, reco: 0, texto: H.info ? [H.info.nombre, H.info.marca, H.info.presentacion].filter(Boolean).join(' ').slice(0, 60) : '', cat: H.info ? H.info.categoria : '' }], ref, hoyDia(), E.ajustes.alias, lugarDe(ref)); } catch (e) { n = 0; } }
     if (E.hoja !== H) return;
     if (comercio) recordarComercio(comercio);
     cambiarHoja({ estado: 'hecho', ocupado: false, error: '', fallo: false, sinCodigo: false, cerca: null,
@@ -6112,6 +6374,16 @@ const Cerca = (() => {
       if (dedoGrueso()) elegir('in-prod-cam');
     },
     'gondola-llevo'() { guardarGondola(true); },
+    // un precio de algo sin código de barras
+    'sin-codigo'() {
+      if (!puede()) return;
+      pintarComercios(); pintarSueltos();
+      abrirHoja({ tipo: 'escanear', modo: 'precio', estado: 'suelto', nombre: '', clave: '', cat: 'otros', id: null, precio: '', comercio: ultimoComercio(), zona: null, estadoZona: 'sin', leyendo: false, aviso: '', error: '', ocupado: false, urls: [], ctl: new AbortController() });
+      if (!hayIA()) { const n = $('#s-nombre'); if (n) n.focus(); }
+    },
+    'suelto-foto'() { if (E.hoja && E.hoja.estado === 'suelto' && !E.hoja.leyendo) elegir(dedoGrueso() ? 'in-suelto-cam' : 'in-suelto-gal'); },
+    'suelto-galeria'() { if (E.hoja && E.hoja.estado === 'suelto' && !E.hoja.leyendo) elegir('in-suelto-gal'); },
+    'suelto-llevo'() { guardarSuelto(true); },
     // «aviso que voy»: una nota para la familia, para que anoten lo que falte
     async 'voy-al-super'() {
       if (!puede() || !Datos.notas) return;
@@ -6488,7 +6760,7 @@ const Cerca = (() => {
       avisar(suma ? 'Copia sumada al hogar' : 'Copia restaurada');
     },
   };
-  const FORMS = { producto: () => guardarProducto(false), conocido: sumarConocido, ticket: guardarTicket, ajustes: guardarAjustes, gondola: () => guardarGondola(false), promo: guardarPromo,
+  const FORMS = { producto: () => guardarProducto(false), conocido: sumarConocido, ticket: guardarTicket, ajustes: guardarAjustes, gondola: () => guardarGondola(false), suelto: () => guardarSuelto(false), 'buscar-cerca': buscarCerca, promo: guardarPromo,
     compra: guardarCompra, nota: guardarNota, 'comercio-nombre': guardarComercioNuevo,
     'puerta-crear': () => entrarPorLaPuerta(true), 'puerta-unirse': () => entrarPorLaPuerta(false) };
 
@@ -6517,6 +6789,7 @@ const Cerca = (() => {
   document.addEventListener('input', e => {
     const el = e.target;
     if (el.id === 'al-buscar') { E.filtro.texto = el.value; renderAlacena(); return; }
+    if (el.id === 'bc-q') { E.buscaEscrito = el.value; return; }      // lo que se va escribiendo no se pierde si la pantalla se redibuja
     if (E.puerta && el.dataset && el.dataset.p) {
       if (el.dataset.p === 'codigo') el.value = conGuion(el.value);      // se acomoda solo: mayúsculas y guion al medio
       E.puerta[el.dataset.p] = el.value;
@@ -6528,7 +6801,7 @@ const Cerca = (() => {
     if (k.startsWith('sub.')) { if (el.id === 'lc-buscar') sugerirComercios(); return; }      // la hoja de encima: buscar un comercio
     E.hoja.sucio = true;
     if (E.hoja.tipo === 'ticket') ticketVivo();
-    if (el.id === 'g-precio' && E.hoja.estado === 'gondola') { const v = veredictoGondola(E.hoja), n = $('#g-veredicto'); if (n) { n.textContent = v.texto; n.className = 'gondola-veredicto ' + v.tono; } }
+    if (el.id === 'g-precio' && (E.hoja.estado === 'gondola' || E.hoja.estado === 'suelto')) { const v = veredictoGondola(E.hoja), n = $('#g-veredicto'); if (n) { n.textContent = v.texto; n.className = 'gondola-veredicto ' + v.tono; } }
     if (el.id === 'p-diario' && E.hoja.f) E.hoja.f.diarioTocado = true;
     if (el.id === 'p-categoria' && E.hoja.f && !E.hoja.f.diarioTocado) {
       E.hoja.f.diario = N.diarioPorCategoria(el.value);
@@ -6547,6 +6820,7 @@ const Cerca = (() => {
   });
   document.addEventListener('change', e => {
     const el = e.target;
+    if (el.dataset && 'suelto' in el.dataset && E.hoja && E.hoja.estado === 'suelto') { actualizarSuelto(E.hoja); return; }
     if (el.dataset && el.dataset.cambio === 'ia') {      // usar o no la IA: vale para este teléfono
       try { if (el.checked) localStorage.removeItem(CLAVE_IA); else localStorage.setItem(CLAVE_IA, 'no'); } catch (x) { /* sin almacenamiento */ }
       pintar();
@@ -6599,6 +6873,7 @@ const Cerca = (() => {
   alElegir('in-prod-gal', alProducto);
   alElegir('in-tic-cam', fs => fotoTicket(fs));
   alElegir('in-tic-gal', fs => fotoTicket(fs));
+  if (document.getElementById('in-suelto-cam')) { alElegir('in-suelto-cam', fs => fotoSuelto(fs[0])); alElegir('in-suelto-gal', fs => fotoSuelto(fs[0])); }
   if (document.getElementById('in-promo-cam')) { alElegir('in-promo-cam', fs => fotoPromo(fs[0])); alElegir('in-promo-gal', fs => fotoPromo(fs[0])); }
   if (document.getElementById('in-copia')) alElegir('in-copia', async fs => {
     const H = E.hoja;

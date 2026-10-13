@@ -566,3 +566,9 @@ a.promo-hoy { display: block; margin: 0 0 10px; color: inherit; text-decoration:
 .receta p { margin: 0; }
 .receta details summary { cursor: pointer; font-weight: 600; font-size: 14.5px; padding: 6px 0; }
 .receta .pasos { margin: 4px 0 0; padding-left: 22px; display: flex; flex-direction: column; gap: 6px; font-size: 15px; line-height: 1.45; }
+.btn.sin-codigo { flex-direction: column; gap: 2px; height: auto; min-height: 56px; padding: 10px 14px; margin-top: 4px; }
+.btn.sin-codigo small { font-weight: 500; font-size: 13px; opacity: .75; }
+.buscador { display: flex; gap: 8px; align-items: stretch; }
+.buscador .buscar { flex: 1; min-width: 0; }
+.buscador .btn { flex: none; }
+#bc-res:not(:empty) { margin-top: 10px; }
