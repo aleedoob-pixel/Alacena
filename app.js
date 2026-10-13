@@ -10,7 +10,7 @@
      6. Fotos      las fotos de los tickets, guardadas en cada teléfono (IndexedDB)
      7. Datos      la cuenta de Google, el hogar y sus datos en Firebase (Cloud Firestore)
      8. Lector     busca un producto por su código de barras en Open Food Facts
-     9. Cerca      Google Maps: los comercios, el mapa y los precios que comparten los hogares de la zona
+     9. Cerca      OpenStreetMap: los comercios, el mapa y los precios que comparten los hogares de la zona
     10. la pantalla: entrada, alacena, compras, gastos, novedades, escáner, tickets, notas y ajustes */
 
 /* Lector de códigos de barras de producto (EAN-13, UPC-A y EAN-8) sobre una
@@ -900,7 +900,7 @@ const Ahorro = (() => {
 
   /* ---------- precios de afuera ----------
      Cada uno: { precio, k (el comercio: su identificador), lat, lon, dia, cuantos, comercio (su nombre, si se sabe),
-     propio (lo cargó este mismo hogar) }.
+     propio (lo cargó este mismo hogar), hogar (el nombre público del hogar que lo cargó), si / no (cuántos lo recomiendan o no) }.
      Se deja el último de cada comercio y se ordenan del más barato al más caro; `pos` y `radio` descartan los lejanos. */
   function ordenarCerca(lista, pos, radio) {
     const m = new Map();
@@ -918,7 +918,15 @@ const Ahorro = (() => {
      que se paga: un precio así casi siempre está mal cargado o es de otro producto. */
   const conviene = (o, precio) => precio > 0 && !o.propio && o.precio <= precio * 0.97 && o.precio >= precio * 0.4;
   const masBaratos = (cerca, precio) => (cerca || []).filter(o => conviene(o, precio));
-  const origen = o => (o.cuantos > 1 ? `lo cargaron ${o.cuantos} personas` : o.propio ? 'lo cargó tu hogar' : 'lo cargó otro hogar');
+  // Quién lo cargó: el nombre público del hogar, si eligió uno; y cuántas veces se confirmó ese precio.
+  const origen = o => (o.propio ? 'lo cargó tu hogar' : `lo cargó ${o.hogar || 'otro hogar'}`) + (o.cuantos > 1 ? ` · confirmado ${o.cuantos} veces` : '');
+  // Cuántos hogares de la zona recomiendan (o no) un producto, sumando lo de cada comercio: «3 lo recomiendan · 1 no».
+  function recoTexto(l) {
+    let si = 0, no = 0;
+    for (const o of l || []) { si += +o.si || 0; no += +o.no || 0; }
+    if (!si && !no) return '';
+    return [si ? `👍 ${si} ${si === 1 ? 'hogar lo recomienda' : 'hogares lo recomiendan'}` : '', no ? `👎 ${no} no` : ''].filter(Boolean).join(' · ');
+  }
   // «$ 1.200 en Día, a 600 m» · sin nombre del comercio: «$ 1.200 a 600 m»
   function textoCerca(o) {
     const donde = [o.comercio ? `en ${o.comercio}` : '', o.dist != null ? `a ${distTexto(o.dist)}` : ''].filter(Boolean);
@@ -1038,7 +1046,7 @@ const Ahorro = (() => {
     pct, haceDias, variacion, comparar, textoComparar, tendencia, porComercio, serie, inflacion,
     medida, precioUnitario, fichasTipo, tipoDe, esDelTipo, agrupar,
     distancia, distTexto, puntoValido, celda, celdasCerca, PASO,
-    ordenarCerca, conviene, masBaratos, origen, textoCerca, consejos, plan, cambios,
+    ordenarCerca, conviene, masBaratos, origen, recoTexto, textoCerca, consejos, plan, cambios,
   };
 })();
 
@@ -1327,7 +1335,9 @@ const Fotos = (() => {
      hogares/{hogar}/meses/{AAAA-MM}    { t: { <id>: ticket } }     los tickets, juntos por mes
      hogares/{hogar}/notas/{id}         { texto, de, nombre, creada, hasta }
      invitaciones/{código}              { hogar, por, creada }      para sumar a alguien al hogar
-     precios/{zona_código_comercio}     los precios que los hogares comparten con su zona, sin decir de quién son
+     precios/{zona_código_comercio}     los precios que los hogares comparten con su zona: sin cuentas ni nombres de
+                                        personas; con el nombre público del hogar, si eligió uno
+     comercios/{id}                     los comercios que marcan los hogares cuando no figuran en OpenStreetMap
    Quién puede leer y escribir cada cosa lo deciden las reglas de firestore.rules.
 
    Hay dos maneras de escribir, y se usan para cosas distintas:
@@ -2085,11 +2095,12 @@ const Datos = (() => {
       }
       return out;
     },
-    /* r: { z, e, k, p, d, c, la, lo, v }. Va en cola, como todo: si no hay conexión, sale cuando vuelve.
+    /* r: { z, e, k, p, d, c, la, lo, v, n, h, qs, qn }. Va en cola, como todo: si no hay conexión, sale cuando vuelve.
        Contesta si quedó anotado: false si el servidor lo rechazó; true si lo aceptó o si todavía está en cola.
        `x` es el momento desde el que Firestore lo puede borrar solo (dos días después de vencido). */
     aportar(r) {
-      const dato = { z: String(r.z), e: String(r.e), ze: `${r.z}_${r.e}`, k: String(r.k), p: +r.p, d: Math.round(r.d), c: Math.round(r.c) || 1, la: +r.la, lo: +r.lo, v: Math.round(r.v) };
+      const dato = { z: String(r.z), e: String(r.e), ze: `${r.z}_${r.e}`, k: String(r.k), p: +r.p, d: Math.round(r.d), c: Math.round(r.c) || 1, la: +r.la, lo: +r.lo, v: Math.round(r.v),
+        n: String(r.n || 'Comercio').slice(0, 60), h: String(r.h || '').slice(0, 40), qs: Math.max(0, Math.round(+r.qs || 0)), qn: Math.max(0, Math.round(+r.qn || 0)) };
       let envio;
       try { dato.x = F.fs.Timestamp.fromMillis((dato.v + 2) * 864e5); envio = F.fs.setDoc(F.fs.doc(F.db, 'precios', `${dato.ze}_${dato.k}`), dato); }
       catch (e) { return Promise.resolve(false); }
@@ -2103,6 +2114,33 @@ const Datos = (() => {
     },
     // Uno vencido: se borra para que no quede guardado más tiempo del debido.
     borrar(id) { try { F.fs.deleteDoc(F.fs.doc(F.db, 'precios', String(id))).catch(() => {}); } catch (e) { /* lo borrará otro */ } },
+  };
+
+  /* ---------- comercios que marcan los hogares ----------
+     Los que no figuran en OpenStreetMap: el nombre, dónde queda y el rubro. Quedan para toda la zona y no se
+     cambian ni se borran desde la app (no dicen qué hogar los marcó). */
+  const comercios = {
+    // zonas: ['553x1216', …]. Devuelve [{ id, z, n, la, lo, r }].
+    async buscar(zonas) {
+      const { fs, db: base } = F, out = [];
+      for (let i = 0; i < zonas.length; i += 30) {
+        const s = await conTope(fs.getDocs(fs.query(fs.collection(base, 'comercios'), fs.where('z', 'in', zonas.slice(i, i + 30)))), 20000);
+        for (const d of s.docs) out.push(Object.assign({ id: d.id }, d.data()));
+      }
+      return out;
+    },
+    async leer(id) {
+      const s = await conTope(F.fs.getDoc(F.fs.doc(F.db, 'comercios', String(id))), 20000);
+      return s.exists() ? s.data() : null;
+    },
+    // c: { z, n, la, lo, r }. Devuelve el identificador nuevo (si no hay conexión, sale cuando vuelve).
+    async crear(c) {
+      const id = idNuevo(), dato = { z: String(c.z), n: String(c.n).slice(0, 60), la: +c.la, lo: +c.lo, r: String(c.r || '').slice(0, 30), t: F.fs.serverTimestamp() };
+      const envio = F.fs.setDoc(F.fs.doc(F.db, 'comercios', id), dato);
+      const ok = await Promise.race([envio.then(() => true, () => false), pausa(2500).then(() => true)]);
+      if (!ok) throw { code: 'permission-denied', texto: 'El servidor no aceptó el comercio: falta publicar las reglas nuevas (el archivo firestore.rules).' };
+      return id;
+    },
   };
 
   /* ---------- copia de seguridad ---------- */
@@ -2169,12 +2207,13 @@ const Datos = (() => {
     hogar,
     notas: notasDelHogar,
     precios,
+    comercios,
     mover,
     textos: {
       sinConexion: 'No se pudo abrir la conexión con el servidor. Revisá internet y recargá la página.',
       donde: 'Los datos de este hogar se guardan en Firebase, un servicio de Google, y los ven solo sus integrantes. Cada teléfono guarda una copia para seguir andando sin conexión. Las fotos de los tickets quedan en el teléfono donde se cargaron.',
       fallo: 'No se pudo guardar. Revisá la conexión y probá de nuevo.',
-      version: 'Libreta del hogar · versión 2.0.1 (2026-10-12)',       // el número y la fecha los pone armar.js
+      version: 'Libreta del hogar · versión 2.1.0 (2026-10-13)',       // el número y la fecha los pone armar.js
     },
     /* Devuelve { db, permiso } si en este teléfono ya hay una cuenta con su hogar. Si no, { puerta, alEntrar }:
        la app muestra la entrada y `alEntrar` se cumple cuando se entra a un hogar. null: sin conexión. */
@@ -2266,82 +2305,50 @@ const Lector = (() => {
 })();
 
 
-/* Lo que la libreta le pide a Google Maps y a los hogares de la zona:
+/* Lo que la libreta sabe de los comercios y de los hogares de la zona, con mapas libres (OpenStreetMap):
      · dónde está el teléfono: se lo pregunta al navegador cuando la persona lo pide, y queda guardado solo acá;
-     · los comercios: buscarlos cerca o por su nombre, saber dónde quedan y dibujarlos en el mapa;
+     · los comercios: los de OpenStreetMap (por el servicio Overpass) y los que marcan los hogares de la libreta
+       cuando uno no figura; buscarlos cerca o por su nombre y dibujarlos en el mapa (MapLibre + OpenFreeMap);
      · los precios que comparten los hogares de la zona: leerlos y aportar los propios (por Datos.precios).
-   Hace falta una clave de Google Maps Platform en config.js (`googleMapsKey`). Sin ella, nada de esto se ofrece.
+   No hace falta clave ni cuenta en ningún servicio. Los datos de OpenStreetMap son libres (licencia ODbL): se
+   pueden guardar, y el mapa muestra siempre «© OpenStreetMap».
 
-   De Google se guarda únicamente el identificador de cada lugar. Dónde queda se recuerda en este teléfono 30
-   días como mucho, y el nombre y la dirección no se guardan: se le piden cada vez que hay que mostrarlos. Es
-   lo que permiten las condiciones de Google Maps Platform. */
+   Cada comercio se identifica con un texto: 'osm:n123' (un punto de OpenStreetMap; 'w' una forma, 'r' un
+   conjunto) o 'com:<id>' (uno que marcó un hogar, en la colección `comercios`). */
 const Cerca = (() => {
   'use strict';
   const N = Nucleo, A = Ahorro;
-  let clave = '';
-  try { if (typeof googleMapsKey === 'string') clave = googleMapsKey.trim(); } catch (e) { /* config.js no la trae */ }
-  if (!clave && typeof window.LIBRETA_MAPS === 'string') clave = window.LIBRETA_MAPS.trim();
-  const API = window.LIBRETA_MAPS_API || 'https://maps.googleapis.com/maps/api/js';
+  let activo = true;
+  try { if (typeof mapasLibres !== 'undefined' && mapasLibres === false) activo = false; } catch (e) { /* config.js no lo dice: se usan */ }
+  const OVERPASS = window.LIBRETA_OVERPASS || ['https://overpass-api.de/api/interpreter', 'https://overpass.private.coffee/api/interpreter'];
+  const ESTILO = window.LIBRETA_ESTILO || 'https://tiles.openfreemap.org/styles/liberty';
+  const MAPLIBRE = window.LIBRETA_MAPLIBRE || 'https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl';
   const DIA = 864e5;
   const RADIO_CERCA = 1500;        // metros: hasta dónde se buscan comercios para elegir
+  const RADIO_NOMBRE = 15000;      // metros: hasta dónde se busca un comercio por su nombre
   const RADIO_ZONA = 4000;         // metros: hasta dónde interesan los precios de otros hogares
-  const VIDA_LUGAR = 30 * DIA;     // lo que Google deja recordar dónde queda un lugar
-  const FRESCO = 20 * DIA;         // pasado esto, antes de compartir un precio se le vuelve a preguntar
-  const GUARDA = 27;               // días que un precio compartido puede seguir guardado desde que se supo dónde queda su comercio
-  const LUGAR_DE_PRUEBA = 'ChIJN1t_tDeuEmsRUsoyG83frY4';      // el que usa Google en sus ejemplos: sirve para probar la clave
+  const PASO_OSM = 0.01;           // los comercios de OpenStreetMap se piden por cuadros de una centésima de grado (~1 km)
+  const VIDA_OSM = 14 * DIA;       // y se vuelven a pedir a las dos semanas
+  const MAX_LUGARES = 400;         // cuántos comercios recuerda el teléfono (dónde quedan y cómo se llaman)
 
   const esObjeto = x => !!x && typeof x === 'object' && !Array.isArray(x);
   function leer(k, def) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : def; } catch (e) { return def; } }
   function guardar(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* sin almacenamiento: dura lo que la visita */ } }
+  const pausa = ms => new Promise(ok => setTimeout(ok, ms));
 
-  /* ---------- qué decir cuando Google no contesta ---------- */
+  /* ---------- qué decir cuando algo no contesta ---------- */
   function pista(e) {
     const c = String((e && e.code) || ''), m = String((e && e.message) || '');
-    if (c === 'sin-clave') return 'Falta la clave de Google Maps en config.js.';
-    if (c === 'clave' || /InvalidKey|RefererNotAllowed|ApiNotActivated|ApiTargetBlocked|BillingNotEnabled|REQUEST_DENIED|PERMISSION_DENIED|API key|not authorized/i.test(m)) {
-      return 'Google Maps no aceptó la clave de config.js. Tiene que tener habilitadas «Maps JavaScript API» y «Places API (New)», la facturación activa, y permitir esta dirección.';
-    }
-    if (c === 'cuota' || /OVER_QUERY_LIMIT|RESOURCE_EXHAUSTED|quota/i.test(m)) return 'Se llegó al tope de consultas a Google Maps por hoy. Mañana vuelve a andar.';
-    if (c === 'sin-permiso') return 'El navegador no dio permiso para usar la ubicación. Se puede habilitar en los permisos de esta página; mientras tanto, buscá el comercio por su nombre.';
+    if (c === 'ocupado' || /\b(429|504)\b/.test(m)) return 'El servicio de mapas libres está ocupado. Probá de nuevo en un rato.';
+    if (c === 'sin-permiso') return 'El navegador no dio permiso para usar la ubicación. Se puede habilitar en los permisos de esta página; mientras tanto, elegí uno de tus comercios o marcalo en el mapa.';
     if (c === 'sin-ubicacion') return 'No se pudo saber dónde estás. Probá de nuevo con la ubicación del teléfono encendida.';
-    if (c === 'sin-lugar') return 'Google Maps no dice dónde queda ese comercio.';
-    if (c === 'sin-red' || /network|fetch|timeout|load/i.test(m)) return 'No se pudo llegar a Google Maps. Revisá internet y probá de nuevo.';
-    return 'Google Maps no pudo contestar. Probá de nuevo.';
+    if (c === 'sin-lugar') return 'No se sabe dónde queda ese comercio.';
+    if (c === 'sin-zona') return 'Para buscar comercios por su nombre hace falta saber más o menos dónde estás: tocá «Buscar comercios cerca mío».';
+    if (c === 'mapa') return 'No se pudo dibujar el mapa.';
+    if (c === 'sin-red' || /network|fetch|timeout|load|abort/i.test(m)) return 'No se pudo llegar al mapa. Revisá internet y probá de nuevo.';
+    return 'El mapa no pudo contestar. Probá de nuevo.';
   }
-  const conPista = e => (e && typeof e.code === 'string' && e.code.startsWith('cerca/') ? e : { code: 'cerca/' + String((e && e.code) || 'error'), texto: pista(e), crudo: String((e && e.message) || '') });
-  const deArgumentos = e => /INVALID_ARGUMENT|invalid|unsupported|unknown/i.test(String((e && e.message) || '')) && !/key/i.test(String((e && e.message) || ''));
-
-  /* ---------- cargar Google Maps ---------- */
-  let G = null, cargando = null, sinAuth = false;
-  const alNegar = new Set();        // a quién avisarle si Google rechaza la clave con un mapa ya dibujado
-  function cargar() {
-    if (!clave) return Promise.reject({ code: 'sin-clave' });
-    if (sinAuth) return Promise.reject({ code: 'clave' });
-    if (!cargando) {
-      cargando = new Promise((ok, mal) => {
-        if (window.google && window.google.maps && window.google.maps.importLibrary) { ok(); return; }
-        const cb = '__libretaMapas', reloj = setTimeout(() => mal({ code: 'sin-red' }), 20000);
-        window[cb] = () => { clearTimeout(reloj); ok(); };
-        // Google llama a esta función cuando no acepta la clave (mal copiada, sin facturación, sitio no permitido)
-        window.gm_authFailure = () => { sinAuth = true; clearTimeout(reloj); mal({ code: 'clave' }); for (const fn of [...alNegar]) { try { fn(); } catch (e) { /* cada mapa se cuida solo */ } } };
-        const region = ((/[-_]([A-Za-z]{2})$/.exec(navigator.language || '') || [])[1] || 'AR').toUpperCase();
-        const s = document.createElement('script');
-        s.src = `${API}?key=${encodeURIComponent(clave)}&v=weekly&loading=async&language=es&region=${region}&callback=${cb}`;
-        s.async = true;
-        s.onerror = () => { clearTimeout(reloj); s.remove(); mal({ code: 'sin-red' }); };
-        document.head.appendChild(s);
-      }).then(() => { G = window.google.maps; return G; });
-      cargando.catch(() => { if (!sinAuth) cargando = null; });
-    }
-    return cargando;
-  }
-  // Un punto de Google (objeto con lat() y lng(), o con lat y lng) como { lat, lon }.
-  function punto(ll) {
-    if (!ll) return null;
-    const lat = typeof ll.lat === 'function' ? ll.lat() : ll.lat, lon = typeof ll.lng === 'function' ? ll.lng() : ll.lng;
-    return A.puntoValido(lat, lon) ? { lat, lon } : null;
-  }
-  const textoDe = t => (t == null ? '' : String(typeof t.text === 'string' ? t.text : t));
+  const conPista = e => (e && typeof e.code === 'string' && e.code.startsWith('cerca/') ? e : { code: 'cerca/' + String((e && e.code) || 'error'), texto: pista(e), crudo: String((e && (e.crudo || e.message)) || '') });
 
   /* ---------- dónde está el teléfono ---------- */
   const CLAVE_ACA = 'libreta.aca';
@@ -2349,7 +2356,7 @@ const Cerca = (() => {
     const p = leer(CLAVE_ACA, null);
     return esObjeto(p) && A.puntoValido(p.lat, p.lon) && Date.now() - p.t < 60 * DIA ? { lat: p.lat, lon: p.lon, t: p.t } : null;
   }
-  function olvidarPosicion() { try { localStorage.removeItem(CLAVE_ACA); } catch (e) { /* sin almacenamiento */ } ultCerca = null; }
+  function olvidarPosicion() { try { localStorage.removeItem(CLAVE_ACA); } catch (e) { /* sin almacenamiento */ } }
   const preguntar = ms => new Promise((ok, mal) => navigator.geolocation.getCurrentPosition(
     p => { const pos = { lat: p.coords.latitude, lon: p.coords.longitude, t: Date.now() }; guardar(CLAVE_ACA, pos); ok(pos); },
     e => mal({ code: e && e.code === 1 ? 'sin-permiso' : 'sin-ubicacion' }),
@@ -2369,138 +2376,190 @@ const Cerca = (() => {
     return g;
   }
 
-  /* ---------- dónde queda cada comercio (lo que recuerda este teléfono) ---------- */
+  /* ---------- los comercios que conoce este teléfono ----------
+     libreta.lugares: { id: [lat, lon, cuándo, nombre, dirección, rubro] }. Son datos públicos (de OpenStreetMap o
+     de la zona), así que se pueden recordar; se quedan los MAX_LUGARES usados más recientemente. */
   const CLAVE_LUGARES = 'libreta.lugares';
-  function lugares() {
-    const o = leer(CLAVE_LUGARES, {}), ahora = Date.now(), out = {};
-    let cambio = false;
-    for (const k in esObjeto(o) ? o : {}) {
-      const v = o[k];
-      if (Array.isArray(v) && A.puntoValido(v[0], v[1]) && ahora - v[2] < VIDA_LUGAR && v[2] <= ahora + DIA) out[k] = v; else cambio = true;
-    }
-    if (cambio) guardar(CLAVE_LUGARES, out);        // lo de más de 30 días se borra
-    return out;
-  }
-  function recordar(id, lat, lon) {
+  const conocidos = new Map();         // los de esta visita: id → { id, nombre, direccion, rubro, lat, lon }
+  function lugares() { const o = leer(CLAVE_LUGARES, {}); return esObjeto(o) ? o : {}; }
+  function recordar(id, lat, lon, nombre, direccion, rubro) {
     if (!id || !A.puntoValido(lat, lon)) return;
-    const o = lugares();
-    o[id] = [lat, lon, Date.now()];
+    const o = lugares(), ya = Array.isArray(o[id]) ? o[id] : [];
+    o[id] = [lat, lon, Date.now(), nombre || ya[3] || '', direccion || ya[4] || '', rubro || ya[5] || ''];
+    const ids = Object.keys(o);
+    if (ids.length > MAX_LUGARES) ids.sort((a, b) => o[a][2] - o[b][2]).slice(0, ids.length - MAX_LUGARES).forEach(k => delete o[k]);
     guardar(CLAVE_LUGARES, o);
   }
-  // { lat, lon, t }. Lo recordado, si lo hay (con `fresca`, solo si es reciente); si no, se le pregunta a Google.
-  async function ubicacion(id, fresca) {
-    const v = lugares()[id], guardada = v ? { lat: v[0], lon: v[1], t: v[2] } : null;
-    if (guardada && (!fresca || Date.now() - guardada.t < FRESCO)) return guardada;
-    try {
-      await cargar();
-      const { Place } = await G.importLibrary('places');
-      const lugar = new Place({ id });
-      await lugar.fetchFields({ fields: ['location'] });
-      const u = punto(lugar.location);
-      if (!u) throw { code: 'sin-lugar' };
-      recordar(id, u.lat, u.lon);
-      return { lat: u.lat, lon: u.lon, t: Date.now() };
-    } catch (e) {
-      if (guardada) return guardada;
-      throw conPista(e);
+  function deMemoria(id) {
+    if (conocidos.has(id)) return conocidos.get(id);
+    const v = lugares()[id];
+    return Array.isArray(v) && A.puntoValido(v[0], v[1]) ? { id, lat: v[0], lon: v[1], nombre: v[3] || '', direccion: v[4] || '', rubro: v[5] || '' } : null;
+  }
+  const conocer = l => { conocidos.set(l.id, l); return l; };
+
+  /* ---------- OpenStreetMap, por el servicio Overpass ----------
+     Se pide solo lo que es comercio de comida o de la casa, y cada cuadro una vez cada dos semanas. */
+  const SHOP = 'supermarket|convenience|greengrocer|butcher|bakery|pastry|deli|beverages|alcohol|wine|general|department_store|variety_store|health_food|dairy|cheese|frozen_food|seafood|spices|confectionery|chemist|wholesale|farm|pet|kiosk|food|coffee|tea|organic|nuts|water';
+  const AMENITY = 'pharmacy|marketplace';
+  const RUBROS = { supermarket: 'Supermercado', convenience: 'Almacén', greengrocer: 'Verdulería', butcher: 'Carnicería', bakery: 'Panadería', pastry: 'Confitería', deli: 'Fiambrería',
+    beverages: 'Bebidas', alcohol: 'Bebidas', wine: 'Vinoteca', general: 'Almacén', department_store: 'Tienda', variety_store: 'Bazar', health_food: 'Dietética', dairy: 'Lácteos',
+    cheese: 'Quesería', frozen_food: 'Congelados', seafood: 'Pescadería', spices: 'Especias', confectionery: 'Golosinas', chemist: 'Perfumería', wholesale: 'Mayorista', farm: 'Granja',
+    pet: 'Mascotas', kiosk: 'Kiosco', food: 'Alimentos', coffee: 'Café', tea: 'Té', organic: 'Orgánicos', nuts: 'Frutos secos', water: 'Agua', pharmacy: 'Farmacia', marketplace: 'Mercado' };
+  const rubroDe = t => RUBROS[t.shop] || RUBROS[t.amenity] || 'Comercio';
+  function deOsm(el) {
+    const t = el.tags || {}, lat = typeof el.lat === 'number' ? el.lat : el.center && el.center.lat, lon = typeof el.lon === 'number' ? el.lon : el.center && el.center.lon;
+    if (!A.puntoValido(lat, lon) || !el.id || !/^(node|way|relation)$/.test(el.type)) return null;
+    const rubro = rubroDe(t), calle = [t['addr:street'], t['addr:housenumber']].filter(Boolean).join(' ');
+    return { id: `osm:${el.type[0]}${el.id}`, nombre: String(t.name || t.brand || rubro).slice(0, 80), direccion: calle.slice(0, 120), rubro, lat, lon };
+  }
+  async function overpass(q) {
+    let ultimo = null;
+    for (const url of OVERPASS) {
+      const ctl = typeof AbortController === 'function' ? new AbortController() : null, reloj = setTimeout(() => ctl && ctl.abort(), 25000);
+      try {
+        const r = await fetch(url, { method: 'POST', body: new URLSearchParams({ data: q }), signal: ctl ? ctl.signal : undefined });
+        if (r.status === 429 || r.status === 504 || r.status === 503) { ultimo = { code: 'ocupado', message: 'HTTP ' + r.status }; continue; }
+        if (!r.ok) { ultimo = { code: 'error', message: 'HTTP ' + r.status }; continue; }
+        const j = await r.json();
+        return Array.isArray(j.elements) ? j.elements : [];
+      } catch (e) { ultimo = { code: 'sin-red', message: String((e && e.message) || e) }; }
+      finally { clearTimeout(reloj); }
     }
+    throw ultimo || { code: 'sin-red' };
+  }
+  const n6 = x => Math.round(x * 1e6) / 1e6;
+  const cerca = (r, lat, lon) => `(around:${Math.round(r)},${n6(lat)},${n6(lon)})`;
+  // Los comercios de un cuadro (con un margen, para que alcancen a 1,5 km de cualquier punto del cuadro).
+  const CLAVE_OSM = 'libreta.osm';
+  const pidiendo = new Map();
+  function delCuadro(pos) {
+    const cy = Math.floor((pos.lat + 90) / PASO_OSM + 1e-9), cx = Math.floor((pos.lon + 180) / PASO_OSM + 1e-9), k = `${cy}x${cx}`;
+    const guardados = leer(CLAVE_OSM, {}), g = esObjeto(guardados) ? guardados[k] : null;
+    if (g && Array.isArray(g.l) && Date.now() - g.t < VIDA_OSM && g.t <= Date.now() + DIA) {
+      return Promise.resolve(g.l.map(x => conocer({ id: x[0], nombre: x[1], direccion: x[2], rubro: x[3], lat: x[4], lon: x[5] })));
+    }
+    if (pidiendo.has(k)) return pidiendo.get(k);
+    const lat = (cy + 0.5) * PASO_OSM - 90, lon = (cx + 0.5) * PASO_OSM - 180, r = RADIO_CERCA + 900;
+    const q = `[out:json][timeout:25];(nwr["shop"~"^(${SHOP})$"]${cerca(r, lat, lon)};nwr["amenity"~"^(${AMENITY})$"]${cerca(r, lat, lon)};);out center tags 400;`;
+    const p = overpass(q).then(els => {
+      const l = els.map(deOsm).filter(Boolean).map(conocer);
+      const todos = leer(CLAVE_OSM, {}), o = esObjeto(todos) ? todos : {};
+      o[k] = { t: Date.now(), l: l.map(x => [x.id, x.nombre, x.direccion, x.rubro, x.lat, x.lon]) };
+      for (const v of Object.keys(o).sort((a, b) => o[b].t - o[a].t).slice(6)) delete o[v];       // se guardan los últimos 6 cuadros
+      guardar(CLAVE_OSM, o);
+      return l;
+    });
+    pidiendo.set(k, p);
+    p.then(() => pidiendo.delete(k), () => pidiendo.delete(k));
+    return p;
+  }
+
+  /* ---------- los que marcaron los hogares ---------- */
+  const deLaZona = new Map();          // cuadro (0,1°) → { t, lista }
+  async function marcados(pos) {
+    if (!Datos.comercios) return [];
+    const zonas = A.celdasCerca(pos.lat, pos.lon, RADIO_CERCA), faltan = zonas.filter(z => !deLaZona.has(z) || Date.now() - deLaZona.get(z).t > 600000);
+    if (faltan.length) {
+      try {
+        const docs = await Datos.comercios.buscar(faltan);
+        for (const z of faltan) deLaZona.set(z, { t: Date.now(), lista: [] });
+        for (const d of docs) if (deLaZona.has(d.z) && A.puntoValido(d.la, d.lo)) deLaZona.get(d.z).lista.push(conocer({ id: 'com:' + d.id, nombre: String(d.n || 'Comercio'), direccion: String(d.a || ''), rubro: String(d.r || ''), lat: d.la, lon: d.lo, zona: true }));
+      } catch (e) { /* sin los de la zona esta vez */ }
+    }
+    return zonas.flatMap(z => (deLaZona.get(z) || { lista: [] }).lista);
   }
 
   /* ---------- comercios ---------- */
-  // Lo que Google contestó en esta visita sobre cada lugar: { id, nombre, direccion, lat, lon }. No se guarda.
-  const detalles = new Map();
-  const TIPOS = ['supermarket', 'grocery_store', 'convenience_store', 'market', 'butcher_shop', 'bakery', 'food_store', 'pharmacy', 'drugstore', 'liquor_store',
-    'pet_store', 'wholesaler', 'warehouse_store', 'discount_store', 'asian_grocery_store', 'farmers_market', 'health_food_store', 'deli', 'hypermarket'];
-  const TIPOS_BASICOS = ['supermarket', 'grocery_store', 'convenience_store', 'bakery', 'pharmacy'];
-  let ultCerca = null;       // { pos, t, lista }: si el teléfono casi no se movió, no se le pregunta de nuevo a Google
-  // Los comercios de alimentos y de la casa más cercanos: [{ id, nombre, direccion, lat, lon, dist }], el más cercano primero.
+  let ultCerca = null;       // { pos, t, lista }: si el teléfono casi no se movió, no se pide de nuevo
+  // Los comercios de comida y de la casa más cercanos: [{ id, nombre, direccion, rubro, lat, lon, dist }], el más cercano primero.
   async function cercanos(pos) {
     if (ultCerca && Date.now() - ultCerca.t < 600000 && A.distancia(pos.lat, pos.lon, ultCerca.pos.lat, ultCerca.pos.lon) < 150) return ultCerca.lista;
-    try {
-      await cargar();
-      const { Place, SearchNearbyRankPreference } = await G.importLibrary('places');
-      const pedido = tipos => ({
-        fields: ['displayName', 'formattedAddress', 'location'], locationRestriction: { center: { lat: pos.lat, lng: pos.lon }, radius: RADIO_CERCA },
-        includedTypes: tipos, maxResultCount: 20, rankPreference: SearchNearbyRankPreference ? SearchNearbyRankPreference.DISTANCE : 'DISTANCE', language: 'es',
-      });
-      let r;
-      try { r = await Place.searchNearby(pedido(TIPOS)); }
-      catch (e) { if (!deArgumentos(e)) throw e; r = await Place.searchNearby(pedido(TIPOS_BASICOS)); }      // por si Google deja de aceptar alguno de los rubros
-      const lista = [];
-      for (const pl of (r && r.places) || []) {
-        const u = punto(pl.location);
-        if (!u || !pl.id) continue;
-        const d = { id: String(pl.id), nombre: textoDe(pl.displayName), direccion: textoDe(pl.formattedAddress), lat: u.lat, lon: u.lon };
-        detalles.set(d.id, d);
-        lista.push(Object.assign({ dist: A.distancia(pos.lat, pos.lon, u.lat, u.lon) }, d));
-      }
-      lista.sort((a, b) => a.dist - b.dist);
-      ultCerca = { pos, t: Date.now(), lista };
-      return lista;
-    } catch (e) { throw conPista(e); }
+    const [osm, zona] = await Promise.all([delCuadro(pos).catch(e => { throw conPista(e); }), marcados(pos)]);
+    const vistos = new Set(), lista = [];
+    for (const l of zona.concat(osm)) {
+      if (vistos.has(l.id)) continue;
+      vistos.add(l.id);
+      const dist = A.distancia(pos.lat, pos.lon, l.lat, l.lon);
+      if (dist <= RADIO_CERCA) lista.push(Object.assign({ dist }, l));
+    }
+    lista.sort((a, b) => a.dist - b.dist);
+    ultCerca = { pos, t: Date.now(), lista: lista.slice(0, 40) };
+    return ultCerca.lista;
   }
-  /* Buscar un comercio por su nombre, mientras se escribe. Google cobra una sola vez toda la «sesión» de búsqueda
-     si termina en una elección (ubicarSugerido): por eso las consultas de una misma búsqueda comparten ficha.
-     Devuelve [{ id, nombre, direccion, dist }]; dónde queda cada uno todavía no se sabe. */
-  let ficha = null, sinFiltro = false;
+  // Para comparar nombres sin mayúsculas ni tildes; y para buscarlos en OpenStreetMap igual de tolerante.
+  const plano = s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9ñ ]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const TOLERA = { a: '[aáàäâ]', e: '[eéèëê]', i: '[iíìïî]', o: '[oóòöô]', u: '[uúùüû]', n: '[nñ]', c: '[cç]' };
+  const patron = s => plano(s).split('').map(ch => TOLERA[ch] || (ch === ' ' ? '.*' : ch)).join('');
+  const busquedas = new Map();
+  /* Buscar un comercio por su nombre: primero entre los que ya conoce el teléfono (los cercanos, los marcados por
+     la zona y los del hogar); si son pocos, una consulta a OpenStreetMap en 15 km a la redonda (una por texto).
+     Devuelve [{ id, nombre, direccion, rubro, lat, lon, dist }]. */
   async function sugerir(texto, pos) {
-    try {
-      await cargar();
-      const { AutocompleteSuggestion, AutocompleteSessionToken } = await G.importLibrary('places');
-      if (!ficha) ficha = new AutocompleteSessionToken();
-      const pedido = filtrar => {
-        const p = { input: texto, sessionToken: ficha, language: 'es' };
-        if (filtrar) p.includedPrimaryTypes = ['establishment'];       // comercios, no calles ni ciudades
-        if (pos) { p.origin = { lat: pos.lat, lng: pos.lon }; p.locationBias = { center: { lat: pos.lat, lng: pos.lon }, radius: 20000 }; }
-        return p;
-      };
-      let r;
-      try { r = await AutocompleteSuggestion.fetchAutocompleteSuggestions(pedido(!sinFiltro)); }
-      catch (e) { if (sinFiltro || !deArgumentos(e)) throw e; sinFiltro = true; r = await AutocompleteSuggestion.fetchAutocompleteSuggestions(pedido(false)); }
-      const out = [];
-      for (const s of (r && r.suggestions) || []) {
-        const p = s && s.placePrediction;
-        if (!p || !p.placeId) continue;
-        out.push({ id: String(p.placeId), nombre: textoDe(p.mainText) || textoDe(p.text), direccion: textoDe(p.secondaryText), dist: typeof p.distanceMeters === 'number' ? p.distanceMeters : null, lat: null, lon: null, pred: p });
+    const q = plano(texto);
+    if (q.length < 2) return [];
+    const centro = pos || null, conDist = l => Object.assign({}, l, { dist: centro ? A.distancia(centro.lat, centro.lon, l.lat, l.lon) : null });
+    const coincide = l => plano(l.nombre).includes(q) || plano(l.direccion).includes(q);
+    const out = new Map();
+    for (const l of conocidos.values()) if (coincide(l)) out.set(l.id, conDist(l));
+    if (out.size < 4 && q.length >= 3) {
+      if (!centro) { if (!out.size) throw conPista({ code: 'sin-zona' }); }
+      else {
+        const k = A.celda(centro.lat, centro.lon) + '|' + q;
+        if (!busquedas.has(k)) {
+          const p = patron(q), r = cerca(RADIO_NOMBRE, centro.lat, centro.lon);
+          const consulta = `[out:json][timeout:25];(nwr["shop"~"^(${SHOP})$"]["name"~"${p}",i]${r};nwr["shop"~"^(${SHOP})$"]["brand"~"${p}",i]${r};nwr["amenity"~"^(${AMENITY})$"]["name"~"${p}",i]${r};);out center tags 60;`;
+          const pr = overpass(consulta).then(els => els.map(deOsm).filter(Boolean).map(conocer));
+          busquedas.set(k, pr);
+          pr.catch(() => busquedas.delete(k));
+        }
+        try { for (const l of await busquedas.get(k)) if (!out.has(l.id)) out.set(l.id, conDist(l)); }
+        catch (e) { if (!out.size) throw conPista(e); }
       }
-      return out.slice(0, 6);
-    } catch (e) { throw conPista(e); }
+    }
+    return [...out.values()].sort((a, b) => (a.dist == null ? 1e9 : a.dist) - (b.dist == null ? 1e9 : b.dist)).slice(0, 8);
   }
-  // Se eligió uno de los sugeridos: se le pide a Google dónde queda. Con eso termina la sesión de búsqueda.
-  async function ubicarSugerido(l) {
-    try {
-      await cargar();
-      const { Place } = await G.importLibrary('places');
-      const lugar = l.pred && typeof l.pred.toPlace === 'function' ? l.pred.toPlace() : new Place({ id: l.id });
-      await lugar.fetchFields({ fields: ['location'] });
-      ficha = null;
-      const u = punto(lugar.location);
-      if (!u) throw { code: 'sin-lugar' };
-      return u;
-    } catch (e) { throw conPista(e); }
-  }
-  // El nombre y la dirección de un lugar, para mostrarlos ahora: { id, nombre, direccion, lat, lon }.
+  const ubicarSugerido = l => (A.puntoValido(l.lat, l.lon) ? Promise.resolve({ lat: l.lat, lon: l.lon }) : ubicacion(l.id));
+  // Nombre, dirección y ubicación de un comercio: { id, nombre, direccion, rubro, lat, lon }.
   async function detalle(id) {
-    if (detalles.has(id)) return detalles.get(id);
+    const ya = deMemoria(id);
+    if (ya) return ya;
+    let l = null;
     try {
-      await cargar();
-      const { Place } = await G.importLibrary('places');
-      const lugar = new Place({ id, requestedLanguage: 'es' });
-      await lugar.fetchFields({ fields: ['displayName', 'formattedAddress', 'location'] });
-      const u = punto(lugar.location);
-      const d = { id, nombre: textoDe(lugar.displayName), direccion: textoDe(lugar.formattedAddress), lat: u ? u.lat : null, lon: u ? u.lon : null };
-      if (u) recordar(id, u.lat, u.lon);
-      detalles.set(id, d);
-      return d;
+      const m = /^osm:([nwr])(\d+)$/.exec(id), c = /^com:(.+)$/.exec(id);
+      if (m) {
+        const els = await overpass(`[out:json][timeout:25];${{ n: 'node', w: 'way', r: 'relation' }[m[1]]}(${m[2]});out center tags;`);
+        l = els.map(deOsm).filter(Boolean)[0] || null;
+      } else if (c && Datos.comercios) {
+        const d = await Datos.comercios.leer(c[1]);
+        if (d && A.puntoValido(d.la, d.lo)) l = { id, nombre: String(d.n || 'Comercio'), direccion: String(d.a || ''), rubro: String(d.r || ''), lat: d.la, lon: d.lo, zona: true };
+      }
     } catch (e) { throw conPista(e); }
+    if (!l) throw conPista({ code: 'sin-lugar' });
+    recordar(id, l.lat, l.lon, l.nombre, l.direccion, l.rubro);
+    return conocer(l);
   }
-  // La dirección de Google Maps (la app o la web) que abre ese lugar, con «Cómo llegar».
-  const enlace = (id, lat, lon) => `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${lat},${lon}`)}&query_place_id=${encodeURIComponent(id)}`;
+  // { lat, lon }: dónde queda un comercio.
+  async function ubicacion(id) { const d = await detalle(id); return { lat: d.lat, lon: d.lon, t: Date.now() }; }
+  // Un comercio que no figura: lo marca este hogar y queda para toda la zona. Devuelve su identificador ('com:…').
+  async function marcar(nombre, lat, lon, rubro) {
+    if (!Datos.comercios) throw conPista({ code: 'error' });
+    const n = String(nombre || '').trim().slice(0, 60);
+    if (!n || !A.puntoValido(lat, lon)) throw conPista({ code: 'sin-lugar' });
+    const z = A.celda(lat, lon), id = await Datos.comercios.crear({ z, n, la: n6(lat), lo: n6(lon), r: String(rubro || '').slice(0, 30) });
+    const l = conocer({ id: 'com:' + id, nombre: n, direccion: '', rubro: rubro || '', lat: n6(lat), lon: n6(lon), zona: true });
+    const g = deLaZona.get(z);
+    if (g) g.lista.push(l);
+    ultCerca = null;
+    recordar(l.id, l.lat, l.lon, l.nombre, '', l.rubro);
+    return l.id;
+  }
+  // Para ir hasta ahí: abre la app de mapas que use la persona (en el teléfono, la que tenga), con «Cómo llegar».
+  const enlace = (id, lat, lon) => `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(`${lat},${lon}`)}`;
 
   /* ---------- los precios de la zona ----------
-     Los precios compartidos se guardan por zona (un cuadro del mapa) y código de barras. De cada comercio queda
-     su identificador de Google y dónde queda; cada precio vence a los 30 días como mucho, y los vencidos se
-     borran: al encontrarlos y, una vez por día, con `limpiar`. */
+     Cada precio compartido es un documento por zona (un cuadro del mapa), código de barras y comercio. Lleva el
+     nombre público del comercio y, si el hogar lo eligió, su nombre público («Familia García»); nunca la cuenta, el
+     email ni los nombres de las personas. Vence a los 30 días como mucho y los vencidos se borran. */
   // Lo que la zona compartió para esos códigos de barras cerca de `pos`: Map código → precios, el más barato primero.
   async function buscar(pos, codigos) {
     const hoy = N.diaDe(N.hoyISO()), zonas = A.celdasCerca(pos.lat, pos.lon, RADIO_ZONA), claves = [], out = new Map();
@@ -2516,26 +2575,32 @@ const Cerca = (() => {
     for (const d of docs) {
       if (!(d.v >= hoy) || !(d.d <= hoy + 1) || !(d.p > 0)) { if (d.v < hoy - 2) Datos.precios.borrar(d.id); continue; }
       if (!crudos.has(d.e)) crudos.set(d.e, []);
-      crudos.get(d.e).push({ precio: +d.p, k: String(d.k), lat: +d.la, lon: +d.lo, dia: +d.d, cuantos: +d.c || 1, comercio: '' });
+      crudos.get(d.e).push({ precio: +d.p, k: String(d.k), lat: +d.la, lon: +d.lo, dia: +d.d, cuantos: +d.c || 1, comercio: typeof d.n === 'string' ? d.n : '', hogar: typeof d.h === 'string' ? d.h : '', si: +d.qs || 0, no: +d.qn || 0 });
     }
     for (const [e, l] of crudos) { const o = A.ordenarCerca(l, pos, RADIO_ZONA); if (o.length) out.set(e, o); }
     return out;
   }
-  /* Lo que este hogar pagó, para la zona. items: [{ codigo, precio }] · ref: el comercio · dia: el de la compra.
-     No dice quién lo cargó. Devuelve cuántos precios quedaron anotados (los que el servidor rechaza no cuentan). */
-  async function aportar(items, ref, dia) {
-    const u = await ubicacion(ref, true);
-    const z = A.celda(u.lat, u.lon), vence = Math.min(dia + 30, N.diaDe(N.hoyISO(new Date(u.t))) + GUARDA);
-    if (vence < dia) return 0;
+  /* Lo que este hogar pagó, para la zona. items: [{ codigo, precio, reco }] (reco: 1 lo recomienda, -1 no, 0 nada)
+     ref: el comercio · dia: el de la compra · quien: el nombre público del hogar ('' si no eligió ninguno).
+     Devuelve cuántos precios quedaron anotados (los que el servidor rechaza no cuentan). */
+  const CLAVE_VOTOS = 'libreta.votos';
+  async function aportar(items, ref, dia, quien) {
+    const l = await detalle(ref);
+    const z = A.celda(l.lat, l.lon), vence = dia + 30;
     const validos = items.filter(it => it.precio > 0 && it.codigo);
     let previos = [];
     try { previos = await Datos.precios.buscar(validos.map(it => `${z}_${it.codigo}`)); } catch (e) { previos = []; }
+    const votos = new Set(leer(CLAVE_VOTOS, [])), hogar = String(quien || '').trim().slice(0, 40);
     const hechos = await Promise.all(validos.map(it => {
-      const ya = previos.find(d => d.e === it.codigo && d.k === ref && d.v >= dia);
+      const ya = previos.find(d => d.e === it.codigo && d.k === ref && d.v >= dia), idDoc = `${z}_${it.codigo}_${ref}`;
       // el mismo precio visto otro día es una confirmación más; uno distinto empieza la cuenta de nuevo
       const c = ya && Math.abs(ya.p - it.precio) <= it.precio * 0.01 ? (ya.d < dia ? Math.min(9999, (+ya.c || 1) + 1) : (+ya.c || 1)) : 1;
-      return Datos.precios.aportar({ z, e: it.codigo, k: ref, p: it.precio, d: dia, c, la: u.lat, lo: u.lon, v: vence });
+      // cada hogar cuenta una sola vez su recomendación de un producto en un comercio
+      let qs = ya ? Math.min(9999, +ya.qs || 0) : 0, qn = ya ? Math.min(9999, +ya.qn || 0) : 0;
+      if (it.reco && !votos.has(idDoc)) { if (it.reco > 0) qs = Math.min(9999, qs + 1); else qn = Math.min(9999, qn + 1); votos.add(idDoc); }
+      return Datos.precios.aportar({ z, e: it.codigo, k: ref, p: it.precio, d: dia, c, la: l.lat, lo: l.lon, v: vence, n: l.nombre.slice(0, 60) || 'Comercio', h: hogar, qs, qn });
     }));
+    guardar(CLAVE_VOTOS, [...votos].slice(-500));
     return hechos.filter(Boolean).length;
   }
 
@@ -2556,96 +2621,102 @@ const Cerca = (() => {
   }
 
   /* ---------- el mapa ----------
-     Dibuja el mapa de Google en `el`, con un cartelito por comercio. Cada mapa que se dibuja cuenta para Google
-     como una carga: se dibuja una vez por hoja y después solo se le cambian cosas.
-       op: { pines: [{ k, lat, lon, texto, tono }], yo: { lat, lon } | null, alTocar(k) }
-     Devuelve { elegir(k, mover), destruir() }. */
-  async function dibujar(el, op) {
-    try {
-      await cargar();
-      const [maps, core] = await Promise.all([G.importLibrary('maps'), G.importLibrary('core')]);
-      const Mapa = maps.Map, Capa = maps.OverlayView || G.OverlayView, LatLng = core.LatLng, Limites = core.LatLngBounds;
-      // Un cartel pegado a un punto del mapa.
-      class Cartel extends Capa {
-        constructor(p, nodo) { super(); this.pos = new LatLng(p.lat, p.lon); this.nodo = nodo; }
-        onAdd() { this.getPanes().overlayMouseTarget.appendChild(this.nodo); }
-        draw() {
-          const pr = this.getProjection(), pt = pr && pr.fromLatLngToDivPixel(this.pos);
-          if (pt) { this.nodo.style.left = pt.x + 'px'; this.nodo.style.top = pt.y + 'px'; }
+     MapLibre (la biblioteca) con el mapa de OpenFreeMap (datos de OpenStreetMap). Se carga la primera vez que hace falta. */
+  let cargando = null;
+  function cargarMapa() {
+    if (window.maplibregl) return Promise.resolve(window.maplibregl);
+    if (!cargando) {
+      cargando = new Promise((ok, mal) => {
+        if (!document.querySelector('link[data-maplibre]')) {
+          const css = document.createElement('link');
+          css.rel = 'stylesheet'; css.href = MAPLIBRE + '.css'; css.dataset.maplibre = '1';
+          document.head.appendChild(css);
         }
-        onRemove() { this.nodo.remove(); }
-      }
+        const s = document.createElement('script'), reloj = setTimeout(() => mal({ code: 'sin-red' }), 20000);
+        s.src = MAPLIBRE + '.js'; s.async = true;
+        s.onload = () => { clearTimeout(reloj); window.maplibregl ? ok(window.maplibregl) : mal({ code: 'mapa' }); };
+        s.onerror = () => { clearTimeout(reloj); s.remove(); mal({ code: 'sin-red' }); };
+        document.head.appendChild(s);
+      });
+      cargando.catch(() => { cargando = null; });
+    }
+    return cargando;
+  }
+  /* Dibuja el mapa en `el`, con un cartelito por comercio.
+       op: { pines: [{ k, lat, lon, texto, tono }], yo: { lat, lon } | null, alTocar(k), mira: true (para marcar un punto), centro }
+     Devuelve { elegir(k, mover), centro(), destruir() }. */
+  async function dibujar(el, op) {
+    let ml;
+    try { ml = await cargarMapa(); } catch (e) { throw conPista(e); }
+    try {
       const pines = (op.pines || []).filter(p => A.puntoValido(p.lat, p.lon)), yo = op.yo && A.puntoValido(op.yo.lat, op.yo.lon) ? op.yo : null;
       const lienzo = document.createElement('div');
       lienzo.className = 'mapa-lienzo';
       el.textContent = '';
       el.appendChild(lienzo);
-      const centro = yo || pines[0] || { lat: -34.6037, lon: -58.3816 };
-      const mapa = new Mapa(lienzo, {
-        center: { lat: centro.lat, lng: centro.lon }, zoom: 15, maxZoom: 19, disableDefaultUI: true, zoomControl: true,
-        clickableIcons: false, gestureHandling: 'greedy', keyboardShortcuts: false, colorScheme: 'FOLLOW_SYSTEM',
-      });
-      const carteles = new Map();
+      const c0 = op.centro && A.puntoValido(op.centro.lat, op.centro.lon) ? op.centro : yo || pines[0] || { lat: -34.6037, lon: -58.3816 };
+      const mapa = new ml.Map({ container: lienzo, style: ESTILO, center: [c0.lon, c0.lat], zoom: op.mira ? 17 : 15, maxZoom: 19, attributionControl: { compact: true }, dragRotate: false, pitchWithRotate: false, touchPitch: false });
+      try { mapa.touchZoomRotate.disableRotation(); } catch (e) { /* sin gestos táctiles */ }
+      mapa.addControl(new ml.NavigationControl({ showCompass: false }), 'top-right');
+      const marcas = new Map();
       for (const p of pines) {
-        const b = document.createElement('button');
+        const caja = document.createElement('div'), b = document.createElement('button');
+        caja.className = 'marca';
         b.type = 'button';
         b.className = 'pin' + (p.tono ? ' ' + p.tono : '');
         b.textContent = p.texto;
         b.dataset.k = p.k;
         b.addEventListener('click', ev => { ev.stopPropagation(); if (op.alTocar) op.alTocar(p.k); });
-        if (Capa.preventMapHitsAndGesturesFrom) Capa.preventMapHitsAndGesturesFrom(b);
-        const c = new Cartel(p, b);
-        c.setMap(mapa);
-        carteles.set(p.k, c);
+        caja.appendChild(b);
+        marcas.set(p.k, { caja, b, m: new ml.Marker({ element: caja, anchor: 'bottom' }).setLngLat([p.lon, p.lat]).addTo(mapa), lat: p.lat, lon: p.lon });
       }
-      let cartelYo = null;
+      let marcaYo = null;
       if (yo) {
         const s = document.createElement('span');
         s.className = 'pin-yo';
         s.setAttribute('aria-label', 'Vos');
-        cartelYo = new Cartel(yo, s);
-        cartelYo.setMap(mapa);
+        marcaYo = new ml.Marker({ element: s, anchor: 'center' }).setLngLat([yo.lon, yo.lat]).addTo(mapa);
       }
-      if (pines.length + (yo ? 1 : 0) > 1) {
-        const lim = new Limites();
-        for (const p of pines) lim.extend({ lat: p.lat, lng: p.lon });
-        if (yo) lim.extend({ lat: yo.lat, lng: yo.lon });
-        mapa.fitBounds(lim, 56);
+      if (op.mira) {
+        const m = document.createElement('span');
+        m.className = 'mapa-mira';
+        m.setAttribute('aria-hidden', 'true');
+        el.appendChild(m);
+      } else if (pines.length + (yo ? 1 : 0) > 1) {
+        const lim = new ml.LngLatBounds();
+        for (const p of pines) lim.extend([p.lon, p.lat]);
+        if (yo) lim.extend([yo.lon, yo.lat]);
+        mapa.fitBounds(lim, { padding: 56, maxZoom: 16, animate: false });
       }
-      // si Google rechaza la clave recién al dibujar, en vez de su cartel de error queda una explicación
-      const negada = () => { el.textContent = ''; const p = document.createElement('p'); p.className = 'nota gris'; p.textContent = pista({ code: 'clave' }); el.appendChild(p); };
-      alNegar.add(negada);
+      // si el mapa de fondo no carga (sin internet), quedan los carteles sobre gris y abajo la lista
+      mapa.on('error', () => { el.classList.add('sin-fondo'); });
       return {
         elegir(k, mover) {
-          for (const [id, c] of carteles) c.nodo.classList.toggle('elegido', id === k);
-          const c = carteles.get(k);
-          if (c && mover) mapa.panTo(c.pos);
+          for (const [id, x] of marcas) { x.b.classList.toggle('elegido', id === k); x.caja.classList.toggle('elegido', id === k); }
+          const x = marcas.get(k);
+          if (x && mover) mapa.easeTo({ center: [x.lon, x.lat] });
         },
+        centro() { const c = mapa.getCenter(); return { lat: n6(c.lat), lon: n6(c.lng) }; },
         destruir() {
-          alNegar.delete(negada);
-          for (const c of carteles.values()) c.setMap(null);
-          if (cartelYo) cartelYo.setMap(null);
+          try { mapa.remove(); } catch (e) { /* ya no estaba */ }
           el.textContent = '';
         },
       };
-    } catch (e) { throw conPista(e); }
+    } catch (e) { throw conPista({ code: 'mapa', message: String((e && e.message) || e) }); }
   }
 
   return {
-    conMapa: () => !!clave,
-    /* Para la prueba de conexión: que Google Maps cargue y acepte la clave. Le pide solo el identificador de un
-       lugar conocido, que es la consulta que Google no cobra nunca. */
+    conMapa: () => activo,
+    // Para la prueba de conexión: que el mapa de fondo conteste.
     async probar() {
       try {
-        await cargar();
-        const { Place } = await G.importLibrary('places');
-        try { await new Place({ id: LUGAR_DE_PRUEBA }).fetchFields({ fields: ['id'] }); }
-        catch (e) { if (!/NOT_FOUND|no longer valid/i.test(String((e && e.message) || ''))) throw e; }      // que ese lugar ya no exista no dice nada de la clave
+        const r = await Promise.race([fetch(ESTILO, { cache: 'no-store' }), pausa(15000).then(() => { throw { code: 'sin-red' }; })]);
+        if (!r.ok) throw { code: 'error', message: 'HTTP ' + r.status };
         return 'funciona';
       } catch (e) { throw conPista(e); }
     },
     posicion, ultimaPosicion, olvidarPosicion,
-    cercanos, sugerir, ubicarSugerido, detalle, ubicacion, recordar, enlace,
+    cercanos, sugerir, ubicarSugerido, detalle, ubicacion, recordar, marcar, enlace, conocido: deMemoria,
     buscar, aportar, limpiar, dibujar,
     RADIO_ZONA,
   };
@@ -2656,7 +2727,7 @@ const Cerca = (() => {
 (() => {
   'use strict';
   const N = Nucleo, A = Ahorro;
-  const C = typeof Cerca !== 'undefined' ? Cerca : null;      // Google Maps y los precios de la zona: solo con servidor
+  const C = typeof Cerca !== 'undefined' ? Cerca : null;      // el mapa, los comercios y los precios de la zona: solo con servidor
   const $ = (s, r) => (r || document).querySelector(s);
   const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
 
@@ -3030,8 +3101,8 @@ const Cerca = (() => {
     ['familia', 'Toda la familia en el mismo hogar', 'Cada persona entra con su cuenta de Google y se suma con un código. Lo que anota uno lo ven todos al instante, y se pueden dejar notas: «faltan pañales», «hoy cocino yo».'],
     ['gastos', 'El gasto del mes, a la vista', 'Cada compra queda anotada en Gastos: cuánto se va gastando mes a mes, en qué, y cuánto queda del presupuesto.'],
   ];
-  // Con Google Maps configurado hay un paso más: lo que otros hogares pagaron cerca.
-  const PASO_ZONA = ['mapa', 'Lo que otros pagaron cerca', 'Si ubicás el comercio en el mapa, la libreta te avisa cuando otros hogares de tu zona consiguieron lo mismo más barato. Compartir tus precios es optativo, y nunca llevan tu nombre.'];
+  // Con el mapa encendido hay un paso más: la comunidad de hogares de la zona.
+  const PASO_ZONA = ['mapa', 'Una comunidad de hogares', 'Si ubicás el comercio en el mapa, la libreta te avisa cuando otro hogar de tu zona consiguió lo mismo más barato, y dónde. Compartir tus precios es optativo: van con el nombre que elijas para tu hogar, nunca con el tuyo.'];
   const pasosTutorial = () => (conMapa() ? [TUTORIAL_BASE[0], TUTORIAL_BASE[1], PASO_ZONA, TUTORIAL_BASE[2], TUTORIAL_BASE[3]] : TUTORIAL_BASE);
   function vistaTutorial(paso, acciones) {
     const TUTORIAL = pasosTutorial(), [icono, titulo, texto] = TUTORIAL[Math.max(0, Math.min(TUTORIAL.length - 1, paso))];
@@ -3103,14 +3174,14 @@ const Cerca = (() => {
       ${!pie ? '' : P.diag === 'corriendo' ? cargando('Probando la conexión…') : h`${P.diag ? listaDiag(P.diag) : ''}<button type="button" class="enlace" data-act="puerta-diagnostico">${P.diag ? 'Probar la conexión de nuevo' : 'Probar la conexión con el servidor'}</button>`}
     </div>`);
   }
-  // La prueba de conexión: lo de Firebase y, al final, si la clave de Google Maps carga.
+  // La prueba de conexión: lo de Firebase y, al final, si el mapa carga y si se pueden leer los precios de la zona.
   async function diagnosticar() {
     const pasos = await Datos.hogar.diagnostico().catch(() => []);
     if (!C || !pasos.length || pasos.some(x => !x.ok)) return pasos;
-    if (!C.conMapa()) pasos.push({ nombre: 'Google Maps', ok: true, detalle: 'sin clave en config.js: los comercios se anotan a mano y no hay precios de la zona', crudo: '' });
+    if (!C.conMapa()) pasos.push({ nombre: 'Mapa', ok: true, detalle: 'apagado en config.js: los comercios se anotan a mano y no hay precios de la zona', crudo: '' });
     else {
-      try { await C.probar(); pasos.push({ nombre: 'Google Maps', ok: true, detalle: 'la clave funciona', crudo: '' }); }
-      catch (e) { pasos.push({ nombre: 'Google Maps', ok: false, detalle: (e && e.texto) || 'no cargó', crudo: (e && e.crudo) || '' }); return pasos; }
+      try { await C.probar(); pasos.push({ nombre: 'Mapa', ok: true, detalle: 'carga (OpenStreetMap)', crudo: '' }); }
+      catch (e) { pasos.push({ nombre: 'Mapa', ok: false, detalle: (e && e.texto) || 'no cargó', crudo: (e && e.crudo) || '' }); return pasos; }
       if (Datos.precios && Datos.hogar.yo()) {
         try { await Datos.precios.buscar(['0x0_00000000']); pasos.push({ nombre: 'Precios de la zona', ok: true, detalle: 'se pueden leer', crudo: '' }); }
         catch (e) {
@@ -3184,6 +3255,7 @@ const Cerca = (() => {
     return {
       frecuencia: [7, 15, 30].includes(d.frecuencia) ? d.frecuencia : 7, presupuesto: +d.presupuesto > 0 ? +d.presupuesto : 0,
       compartir: d.compartir === true ? true : d.compartir === false ? false : null, comercios,
+      alias: typeof d.alias === 'string' ? d.alias.slice(0, 40) : '',
     };
   }
   let colaAjustes = Promise.resolve();   // una escritura por vez sobre el documento de ajustes
@@ -3192,6 +3264,7 @@ const Cerca = (() => {
     E.ajustes = nuevo;
     const doc = { frecuencia: nuevo.frecuencia, presupuesto: nuevo.presupuesto };      // lo que nunca se usó no se guarda
     if (nuevo.compartir != null) doc.compartir = nuevo.compartir;
+    if (nuevo.alias || antes.alias) doc.alias = nuevo.alias || '';
     if (Object.keys(nuevo.comercios).length || Object.keys(antes.comercios).length) doc.comercios = nuevo.comercios;
     const r = colaAjustes.then(() => escribir(() => E.db.doc('ajustes/hogar').set(doc)));
     colaAjustes = r.catch(() => {});
@@ -3200,8 +3273,8 @@ const Cerca = (() => {
 
   /* ---------- comercios ----------
      En cada compra el comercio es un texto: el nombre que el hogar le da («Día», «el chino de la vuelta»).
-     Si además se lo ubicó en Google Maps, en los ajustes del hogar queda qué lugar es: comercios.<id de Google> = { n: ese nombre }.
-     De Google se guarda solo ese identificador; su nombre y su dirección se le piden cuando hace falta mostrarlos. */
+     Si además se lo ubicó en el mapa, en los ajustes del hogar queda qué comercio es: comercios.<id> = { n: ese nombre },
+     con el identificador de OpenStreetMap ('osm:n123') o el de uno que marcó algún hogar ('com:…'). */
   const ultimoComercio = () => { const v = leerLocal('libreta.comercio', ''); return typeof v === 'string' ? v : ''; };
   const recordarComercio = n => { if (n) guardarLocal('libreta.comercio', n); };
   function comerciosConocidos() {
@@ -3215,7 +3288,7 @@ const Cerca = (() => {
     const dl = $('#lista-comercios');
     if (dl) dl.innerHTML = val(comerciosConocidos().slice(0, 40).map(n => h`<option value="${n}"></option>`));
   }
-  // El lugar de Google Maps que el hogar anotó con ese nombre, o ''.
+  // El comercio del mapa que el hogar anotó con ese nombre, o ''.
   function refDeComercio(nombre) {
     const k = N.norm(nombre);
     if (!k) return '';
@@ -3225,12 +3298,12 @@ const Cerca = (() => {
   const nombreDeRef = ref => (ref && E.ajustes.comercios[ref] ? E.ajustes.comercios[ref].n : '');
   const precioDe = (valor, comercio, fecha) => { const n = limpio(comercio).slice(0, 60), o = { valor, comercio: n, ref: refDeComercio(n) }; if (fecha) o.fecha = fecha; return o; };
   const conMapa = () => !!(C && C.conMapa());
-  const notaComercio = nombre => (refDeComercio(nombre) ? 'Ubicado en Google Maps.' : limpio(nombre) ? 'Tocá el pin para ubicarlo en Google Maps.' : '');
+  const notaComercio = nombre => (refDeComercio(nombre) ? 'Ubicado en el mapa.' : limpio(nombre) ? 'Tocá el pin para ubicarlo en el mapa.' : '');
   function campoComercio(id, k, valor, rotulo, sugerido) {
     const mapa = conMapa(), ubicado = mapa && !!refDeComercio(valor);
     return h`<div class="campo"><span id="${id}-r">${rotulo || 'Dónde lo compraste'}</span><div class="con-boton">
       <input type="text" id="${id}" data-k="${k}" data-comercio value="${valor}" maxlength="60" autocomplete="off" list="lista-comercios" placeholder="${sugerido || 'Opcional'}" aria-labelledby="${id}-r">
-      ${mapa ? h`<button type="button" class="icono-btn borde${ubicado ? ' puesto' : ''}" data-act="elegir-comercio" data-para="${k}" data-campo="${id}" aria-label="Buscar el comercio en Google Maps">${ico('lugar')}</button>` : ''}</div>
+      ${mapa ? h`<button type="button" class="icono-btn borde${ubicado ? ' puesto' : ''}" data-act="elegir-comercio" data-para="${k}" data-campo="${id}" aria-label="Buscar el comercio en el mapa">${ico('lugar')}</button>` : ''}</div>
       ${mapa ? h`<small data-nota-comercio="${id}">${notaComercio(valor)}</small>` : ''}</div>`;
   }
 
@@ -3267,7 +3340,7 @@ const Cerca = (() => {
     const hoy = hoyDia(), hist = N.precios(p);
     if (!hist.length) return '';
     const v = A.variacion(p), t = A.tendencia(p, hoy), pc = A.porComercio(p, hoy, 90), pu = A.precioUnitario(p), u = hist[hist.length - 1];
-    const afuera = (V.cerca.get(id) || []).filter(o => !o.propio);
+    const afuera = (V.cerca.get(id) || []).filter(o => !o.propio && !(p.precio > 0 && o.precio < p.precio * 0.4));      // uno tan barato casi siempre está mal cargado
     return h`<div class="dato precios"><p class="rotulo">Precios</p>
       <p><strong>${N.plata(u[1])}</strong> ${A.haceDias(hoy - u[0])}${u[2] ? ` en ${u[2]}` : ''}${pu ? h` <span class="tenue">· ${pu.texto}</span>` : ''}</p>
       ${v ? h`<p>${v.pct > 0.0005 ? h`<strong class="rojo">Subió ${A.pct(v.pct)}</strong>` : v.pct < -0.0005 ? h`<strong class="verde">Bajó ${A.pct(v.pct)}</strong>` : h`<strong>Mismo precio</strong>`} desde la compra anterior (${N.plata(v.antes)}${v.dias != null ? `, ${v.dias} ${N.plural(v.dias, 'día', 'días')} antes` : ''}).</p>`
@@ -3275,7 +3348,11 @@ const Cerca = (() => {
       ${chispa(A.serie(p))}
       ${t ? h`<p class="tenue">Viene ${t.mensual >= 0 ? 'subiendo' : 'bajando'} <strong>${A.pct(t.mensual)} por mes</strong> (${t.puntos} precios en ${t.dias} días).</p>` : ''}
       ${pc.length ? h`<table class="por-comercio"><caption class="rotulo">Dónde lo compraste</caption>${pc.map(c => h`<tr><th scope="row">${c.comercio}</th><td>${N.plata(c.precio)}</td><td class="tenue">${A.haceDias(hoy - c.dia)}</td></tr>`)}</table>` : ''}
-      ${afuera.length ? h`<p class="tenue">En tu zona otros hogares lo pagaron desde <strong>${N.plata(afuera[0].precio)}</strong>.</p>` : ''}
+      ${afuera.length ? h`<p class="tenue">En tu zona otros hogares lo pagaron desde <strong>${N.plata(afuera[0].precio)}</strong>${afuera[0].hogar ? ` (${afuera[0].hogar}${afuera[0].comercio ? `, en ${afuera[0].comercio}` : ''})` : afuera[0].comercio ? ` en ${afuera[0].comercio}` : ''}.</p>` : ''}
+      ${A.recoTexto(V.cerca.get(id)) ? h`<p class="tenue">${A.recoTexto(V.cerca.get(id))} en tu zona.</p>` : ''}
+      ${codigoDe(p) && puedeCerca() ? h`<div class="reco" role="group" aria-label="¿Lo recomendás?"><span>¿Lo recomendás a otros hogares?</span>
+        <button type="button" class="chip${p.reco === 1 ? ' puesto' : ''}" data-act="reco" data-id="${id}" data-v="1" aria-pressed="${p.reco === 1 ? 'true' : 'false'}" data-escribe>👍 Sí</button>
+        <button type="button" class="chip${p.reco === -1 ? ' puesto' : ''}" data-act="reco" data-id="${id}" data-v="-1" aria-pressed="${p.reco === -1 ? 'true' : 'false'}" data-escribe>👎 No</button></div>` : ''}
       ${puedeCerca() && codigoDe(p) ? h`<button type="button" class="btn btn-chico" data-act="mapa-producto" data-id="${id}">${ico('mapa')}Ver precios en el mapa</button>` : ''}
     </div>`;
   }
@@ -3349,13 +3426,14 @@ const Cerca = (() => {
 
   /* ---------- precios de la zona ----------
      Lo que otros hogares pagaron cerca por los mismos productos (se los reconoce por el código de barras).
-     Hace falta la clave de Google Maps (para ubicar los comercios) y saber, más o menos, dónde está el teléfono. */
+     Hace falta saber, más o menos, dónde está el teléfono. */
   const puedeCerca = () => conMapa() && !!Datos.precios && !!E.db;
   const codigoDe = p => (p && p.codigo && Barras.gtinValido(String(p.codigo).replace(/\D/g, '')) ? Barras.canonico(p.codigo) : '');
   // ¿Ese precio de la zona lo cargó este mismo hogar? Es suyo si está en su historial: el mismo comercio, el mismo día, el mismo precio.
   const esPropio = (p, o) => N.precios(p).some(e => !!e[3] && e[3] === o.k && e[0] === o.dia && Math.abs(e[1] - o.precio) < 0.006);
   // Los precios de la zona para un producto de este hogar, con el nombre que el hogar le da a cada comercio.
-  const deLaZona = (p, l) => l.map(o => Object.assign({}, o, { comercio: nombreDeRef(o.k), propio: esPropio(p, o) }));
+  const deLaZona = (p, l) => l.map(o => Object.assign({}, o, { comercio: nombreDeRef(o.k) || o.comercio || '', propio: esPropio(p, o) }));
+  const recoDe = p => (p && p.reco === 1 ? 1 : p && p.reco === -1 ? -1 : 0);
   // ¿Hace falta pedir de nuevo los precios de la zona? Se mira solo cuando se está por mostrarlos.
   function revisarCerca() {
     if (!puedeCerca() || E.conexion !== 'lista' || !E.prodListo) return;
@@ -3391,11 +3469,11 @@ const Cerca = (() => {
     const hoy = hoyDia(), dia = fechaISO && N.fechaValida(fechaISO) ? N.diaDe(fechaISO) : hoy;
     if (dia < hoy - 3 || dia > hoy) return null;                       // una compra vieja no es novedad para la zona
     const ref = refDeComercio(comercio), con = [];
-    for (const it of items) { const p = E.prod.get(it.id), codigo = codigoDe(p); if (p && !p.ejemplo && codigo && it.precio > 0) con.push({ id: it.id, nombre: p.nombre, codigo, precio: N.redondear2(it.precio), cant: it.cant || 1 }); }
+    for (const it of items) { const p = E.prod.get(it.id), codigo = codigoDe(p); if (p && !p.ejemplo && codigo && it.precio > 0) con.push({ id: it.id, nombre: p.nombre, codigo, precio: N.redondear2(it.precio), cant: it.cant || 1, reco: recoDe(p) }); }
     if (!con.length) return null;
     const out = { baratos: [], compartidos: 0, preguntar: false, ref, porId: new Map() };
     if (ref && E.ajustes.compartir === true) {
-      try { out.compartidos = await C.aportar(con, ref, dia); } catch (e) { out.compartidos = 0; }
+      try { out.compartidos = await C.aportar(con, ref, dia, E.ajustes.alias); } catch (e) { out.compartidos = 0; }
       if (out.compartidos) E.cerca.t = 0;                              // lo de la zona cambió: se vuelve a pedir cuando haga falta
     } else if (ref && E.ajustes.compartir == null) { out.preguntar = true; E.porCompartir = { items: con, ref, dia }; }
     // se mira cerca de donde se compró; si ese comercio no está ubicado, cerca del teléfono
@@ -3421,7 +3499,9 @@ const Cerca = (() => {
     }
     return out.baratos.length || out.preguntar || out.compartidos ? out : null;
   }
-  const detalleOferta = (o, hoy) => [o.comercio ? `en ${o.comercio}` : '', o.dist != null ? `a ${A.distTexto(o.dist)}${o.deCompra ? ' de donde compraste' : ''}` : '', A.haceDias(hoy - o.dia), A.origen(o)].filter(Boolean).join(' · ');
+  const detalleOferta = (o, hoy) => [o.comercio ? `en ${o.comercio}` : '', o.dist != null ? `a ${A.distTexto(o.dist)}${o.deCompra ? ' de donde compraste' : ''}` : '', A.haceDias(hoy - o.dia), A.origen(o), A.recoTexto([o])].filter(Boolean).join(' · ');
+  // La tostada después de anotar un precio: quién lo consiguió más barato y dónde.
+  const avisoBarato = o => `${o.hogar && !o.propio ? `${o.hogar} lo consiguió` : 'Otros hogares lo consiguieron'} más barato: ${textoOferta(o)}`;
   const textoOferta = o => A.textoCerca(o.deCompra ? Object.assign({}, o, { dist: null }) : o);
   // El mapa de lo que, después de una compra, resultó que otros consiguieron más barato.
   function verBaratos(r) {
@@ -3437,9 +3517,9 @@ const Cerca = (() => {
         <ul class="ofertas">${r.baratos.map(b => h`<li><span class="oferta-nombre">${b.nombre}</span><strong class="oferta-precio">${N.plata(b.oferta.precio)}</strong>
           <span class="oferta-detalle">${detalleOferta(b.oferta, hoy)} · vos lo pagaste ${N.plata(b.pagado)}</span></li>`)}</ul>
         <div class="acciones"><button type="button" class="btn btn-chico" data-act="mapa-compra">${ico('mapa')}Ver dónde</button></div></div>` : ''}
-      ${r.preguntar && E.ajustes.compartir == null ? h`<div class="nota compartir"><p><strong>¿Compartir estos precios con otros hogares de tu zona?</strong> Va el producto, el precio, la fecha y el comercio. Nunca tu nombre ni tu hogar. Se puede cambiar después en Ajustes.</p>
+      ${r.preguntar && E.ajustes.compartir == null ? h`<div class="nota compartir"><p><strong>¿Compartir estos precios con otros hogares de tu zona?</strong> Va el producto, el precio, la fecha y el comercio, y el nombre público de tu hogar si elegiste uno en Ajustes. Nunca tu nombre, tu email ni tu dirección. Se puede cambiar después en Ajustes.</p>
         <div class="acciones"><button type="button" class="btn btn-chico" data-act="compartir-no">No</button><button type="button" class="btn btn-chico btn-principal" data-act="compartir-si">Sí, compartir</button></div></div>` : ''}
-      ${r.compartidos ? h`<p class="tenue chico" id="compartidos">${r.compartidos === 1 ? 'Ese precio ya lo ven' : `Esos ${r.compartidos} precios ya los ven`} los hogares de tu zona, sin tu nombre.</p>` : ''}`;
+      ${r.compartidos ? h`<p class="tenue chico" id="compartidos">${r.compartidos === 1 ? 'Ese precio ya lo ven' : `Esos ${r.compartidos} precios ya los ven`} los hogares de tu zona${E.ajustes.alias ? `, como «${E.ajustes.alias}»` : ', sin tu nombre'}.</p>` : ''}`;
   }
   // Lo de la zona que le sirve a este hogar: [{ id, p, o (el más barato), cuantos }], lo que más ahorra primero.
   function ofertasCerca() {
@@ -3465,7 +3545,7 @@ const Cerca = (() => {
     const of = ofertasCerca(), hayAlgo = V.cerca.size > 0, comparte = E.ajustes.compartir;
     // lo que el hogar decidió sobre compartir sus precios; mientras no lo decida, se le pregunta acá
     const compartir = comparte == null
-      ? h`<div class="nota compartir"><p><strong>¿Compartir con tu zona los precios que anotás?</strong> Va el producto, el precio, la fecha y el comercio. Nunca tu nombre ni tu hogar. Sirve cuando el comercio está ubicado en el mapa y el producto tiene código de barras.</p>
+      ? h`<div class="nota compartir"><p><strong>¿Compartir con tu zona los precios que anotás?</strong> Va el producto, el precio, la fecha y el comercio, y el nombre público de tu hogar si elegiste uno en Ajustes. Nunca tu nombre, tu email ni tu dirección. Sirve cuando el comercio está ubicado en el mapa y el producto tiene código de barras.</p>
           <div class="acciones"><button type="button" class="btn btn-chico" data-act="compartir-no">No</button><button type="button" class="btn btn-chico btn-principal" data-act="compartir-si">Sí, compartir</button></div></div>`
       : h`<p class="tenue chico">${comparte ? 'Tu hogar comparte sus precios con la zona, sin nombres.' : 'Tu hogar no comparte sus precios.'} Se cambia en Ajustes.</p>`;
     return h`<div class="bloque cerca"><h2 class="bloque-t">Precios cerca tuyo</h2>
@@ -3860,6 +3940,7 @@ const Cerca = (() => {
     // `sub`: una hoja encima de esta (elegir el comercio, ver el mapa); al cerrarla se vuelve a la de abajo como estaba
     const X = H.sub || H;
     if (X.tipo === 'mapa' && X.mapa) { pintarFichaMapa(X); return; }      // el mapa no se redibuja: cada vez sería abrirlo de nuevo
+    if (X.tipo === 'comercio' && X.paso === 'marcar' && X.mapa) return;     // el de marcar un comercio, tampoco
     el.innerHTML = val(VISTAS[X.tipo](X, H));
     if (arriba) { el.scrollTop = 0; el.focus({ preventScroll: true }); }
   }
@@ -4170,7 +4251,7 @@ const Cerca = (() => {
         </form></div>`);
     },
 
-    // El mapa (de Google) con los precios de la zona. Se dibuja una sola vez; después cambia solo la ficha de abajo.
+    // El mapa con los precios de la zona. Se dibuja una sola vez; después cambia solo la ficha de abajo.
     mapa(H) {
       return marco(H.titulo || 'Precios cerca', h`<div class="hoja-cuerpo">
         ${H.bajada ? h`<p class="tenue chico">${H.bajada}</p>` : ''}
@@ -4179,24 +4260,33 @@ const Cerca = (() => {
         ${H.pines.length ? h`<ul class="lugares" id="mapa-lista">${H.pines.map((pn, i) => filaPin(H, pn, i))}</ul>` : ''}</div>`);
     },
 
-    // Elegir el comercio en Google Maps: va encima de la hoja que se está completando.
+    // Elegir el comercio en el mapa: va encima de la hoja que se está completando.
     comercio(S) {
-      if (S.paso === 'nombre') {
-        const l = S.elegido;
-        return marco('¿Cómo lo anotás?', h`<form class="form" data-form="comercio-nombre" novalidate>
-          <div class="lugar-ficha"><p class="lugar-nombre">${l.nombre}</p>${l.direccion ? h`<p class="lugar-dir">${l.direccion}</p>` : ''}<p class="gmaps" translate="no">Google Maps</p></div>
-          ${campo('Nombre para tu libreta', h`<input type="text" id="lc-nombre" data-k="sub.nombre" value="${S.nombre}" maxlength="40" autocomplete="off" placeholder="El súper de la esquina">`,
-            'Así lo vas a ver en tus compras y gastos. La libreta guarda este nombre y cuál es el lugar en Google Maps; la dirección se le pide a Google cada vez.')}
-          <div class="chips" role="group" aria-label="Nombres frecuentes">${CLASES_COMERCIO.map(c => h`<button type="button" class="chip" data-act="comercio-chip" data-n="${c}">${c}</button>`)}</div>
+      if (S.paso === 'marcar') {
+        return marco('Marcalo en el mapa', h`<div class="hoja-cuerpo">
+          <p class="tenue chico">Mové el mapa hasta que la cruz quede sobre el comercio y tocá «Es acá». Lo van a poder elegir también los demás hogares de la zona.</p>
+          <div class="mapa" id="lc-mapa">${cargando('Abriendo el mapa…')}</div>
           ${S.error ? h`<p class="error" role="alert">${S.error}</p>` : ''}
           <div class="hoja-pie"><button type="button" class="btn" data-act="comercio-volver">Volver</button>
-            <button type="submit" class="btn btn-principal"${atr('disabled', S.ocupado)}>Usar este comercio</button></div></form>`);
+            <button type="button" class="btn btn-principal" data-act="comercio-aca"${atr('disabled', !S.mapa)}>Es acá</button></div></div>`);
+      }
+      if (S.paso === 'nombre') {
+        const l = S.elegido;
+        return marco(l.nuevo ? 'Un comercio nuevo' : '¿Cómo lo anotás?', h`<form class="form" data-form="comercio-nombre" novalidate>
+          ${l.nuevo ? '' : h`<div class="lugar-ficha"><p class="lugar-nombre">${l.nombre}</p>${l.direccion || l.rubro ? h`<p class="lugar-dir">${l.direccion || l.rubro}</p>` : ''}</div>`}
+          ${campo(l.nuevo ? 'Nombre del comercio' : 'Nombre para tu libreta', h`<input type="text" id="lc-nombre" data-k="sub.nombre" value="${S.nombre}" maxlength="40" autocomplete="off" placeholder="${l.nuevo ? 'Almacén Don Pepe' : 'El súper de la esquina'}">`,
+            l.nuevo ? 'Como figura en el cartel. Este nombre y el lugar los ven los hogares de tu zona; no se dice quién lo marcó.' : 'Así lo vas a ver en tus compras y gastos.')}
+          ${l.nuevo ? h`<div class="chips" role="group" aria-label="Rubro">${CLASES_COMERCIO.map(c => h`<button type="button" class="chip${S.rubro === c ? ' puesto' : ''}" data-act="comercio-rubro" data-n="${c}" aria-pressed="${S.rubro === c ? 'true' : 'false'}">${c}</button>`)}</div>`
+            : h`<div class="chips" role="group" aria-label="Nombres frecuentes">${CLASES_COMERCIO.map(c => h`<button type="button" class="chip" data-act="comercio-chip" data-n="${c}">${c}</button>`)}</div>`}
+          ${S.error ? h`<p class="error" role="alert">${S.error}</p>` : ''}
+          <div class="hoja-pie"><button type="button" class="btn" data-act="comercio-volver">Volver</button>
+            <button type="submit" class="btn btn-principal"${atr('disabled', S.ocupado)}>${S.ocupado ? 'Guardando…' : l.nuevo ? 'Guardar el comercio' : 'Usar este comercio'}</button></div></form>`);
       }
       return marco('¿Dónde compraste?', h`<div class="hoja-cuerpo">
         <label class="buscar">${ico('buscar')}<input type="search" id="lc-buscar" data-k="sub.texto" value="${S.texto}" placeholder="Nombre del comercio" autocomplete="off" aria-label="Buscar un comercio por su nombre"></label>
         ${S.error ? h`<p class="error" role="alert">${S.error}</p>` : ''}
         <div id="lc-resultados" class="lc-resultados">${htmlLugares(S)}</div>
-        <p class="gmaps-pie">Los comercios y sus direcciones son de <span class="gmaps" translate="no">Google Maps</span></p></div>`);
+        <p class="gmaps-pie">Mapa y comercios: <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap</a></p></div>`);
     },
 
     copiar(H) {
@@ -4248,12 +4338,15 @@ const Cerca = (() => {
         <button type="button" class="enlace rojo" data-act="hogar-salir">Salir de este hogar</button>
         <button type="button" class="enlace rojo" data-act="hogar-borrar-cuenta">Borrar mi cuenta</button></div>`}</div>`;
   }
-  // Dentro de Ajustes: si este hogar comparte sus precios con la zona, y la ubicación que recuerda este teléfono.
+  // Dentro de Ajustes: si este hogar comparte sus precios con la zona, con qué nombre, y la ubicación que recuerda este teléfono.
   function bloqueZona() {
     const pos = C.ultimaPosicion();
     return h`<div class="dato zona"><p class="rotulo">Precios de tu zona</p>
       <label class="casilla"><input type="checkbox" id="aj-compartir" data-cambio="compartir"${atr('checked', E.ajustes.compartir === true)}>
-        <span>Compartir los precios que anoto con otros hogares de mi zona <small class="tenue">· va el producto, el precio, la fecha y el comercio; nunca tu nombre ni tu hogar</small></span></label>
+        <span>Compartir los precios que anoto con otros hogares de mi zona <small class="tenue">· va el producto, el precio, la fecha y el comercio; nunca tu nombre, tu email ni tu dirección</small></span></label>
+      <label class="campo"><span>Nombre público de tu hogar <small class="tenue">· opcional</small></span>
+        <input type="text" id="aj-alias" data-cambio="alias" value="${E.ajustes.alias}" maxlength="40" autocomplete="off" placeholder="Familia García, Los del 3°B…" enterkeyhint="done">
+        <small>Con este nombre te ven los hogares de tu zona cuando consiguen algo más barato gracias a vos. Sin nombre, aparecés como «otro hogar».</small></label>
       <p class="tenue chico">${pos ? 'Este teléfono recuerda tu ubicación para pedir los precios de tu zona.' : 'Este teléfono no tiene guardada tu ubicación.'}
         <button type="button" class="enlace" data-act="${pos ? 'cerca-olvidar' : 'cerca-activar'}">${pos ? 'Olvidarla' : 'Usar mi ubicación'}</button></p></div>`;
   }
@@ -4268,10 +4361,10 @@ const Cerca = (() => {
       if (!p || !l) continue;
       for (const o of l) {
         if (!A.puntoValido(o.lat, o.lon)) continue;
-        const pn = m.get(o.k) || { k: o.k, lat: o.lat, lon: o.lon, dist: o.dist, nombre: nombreDeRef(o.k), renglones: [], baratos: 0 };
+        const pn = m.get(o.k) || { k: o.k, lat: o.lat, lon: o.lon, dist: o.dist, nombre: nombreDeRef(o.k), publico: o.comercio || '', renglones: [], baratos: 0 };
         const barato = A.conviene(o, p.precio);
         if (barato) pn.baratos++;
-        pn.renglones.push({ nombre: p.nombre, precio: o.precio, barato, detalle: [A.haceDias(hoy - o.dia), A.origen(o), !o.propio && p.precio > 0 ? `vos lo pagaste ${N.plata(p.precio)}` : ''].filter(Boolean).join(' · ') });
+        pn.renglones.push({ nombre: p.nombre, precio: o.precio, barato, detalle: [A.haceDias(hoy - o.dia), A.origen(o), A.recoTexto([o]), !o.propio && p.precio > 0 ? `vos lo pagaste ${N.plata(p.precio)}` : ''].filter(Boolean).join(' · ') });
         m.set(o.k, pn);
       }
     }
@@ -4283,23 +4376,21 @@ const Cerca = (() => {
     }
     return pines.sort((a, b) => b.baratos - a.baratos || (a.dist || 0) - (b.dist || 0));
   }
-  // Debajo del mapa: el comercio elegido. Su nombre y su dirección se le piden a Google en el momento.
+  // Debajo del mapa: el comercio elegido, con el nombre que le da el hogar, el público, la dirección y los precios.
   function fichaMapa(H) {
     const pn = H.pines.find(x => x.k === H.pin);
-    if (!pn) return H.pines.length ? h`<p class="tenue chico">Tocá un precio para ver de qué comercio es.</p>` : '';
-    const d = H.detalles[pn.k], sabe = esObjeto(d);
-    return h`<div class="lugar-ficha">
-      <p class="lugar-nombre">${pn.nombre || (sabe && d.nombre) || (d === 'buscando' ? 'Buscando el comercio…' : 'Un comercio de tu zona')}</p>
-      ${sabe && d.nombre && pn.nombre && N.norm(d.nombre) !== N.norm(pn.nombre) ? h`<p class="lugar-dir">${d.nombre}</p>` : ''}
-      ${sabe && d.direccion ? h`<p class="lugar-dir">${d.direccion}</p>` : ''}
-      ${d === 'fallo' ? h`<p class="tenue chico">Google Maps no contestó cuál es. Con «Cómo llegar» se abre igual.</p>` : ''}
+    if (!pn) return H.pines.length ? h`<p class="tenue chico">Tocá un precio para ver los detalles de ese comercio.</p>` : '';
+    const d = H.detalles[pn.k], sabe = esObjeto(d), publico = (sabe && d.nombre) || pn.publico;
+    return h`<div class="lugar-ficha" data-estado="${d === 'buscando' ? 'buscando' : 'listo'}">
+      <p class="lugar-nombre">${pn.nombre || publico || 'Un comercio de tu zona'}</p>
+      ${publico && pn.nombre && N.norm(publico) !== N.norm(pn.nombre) ? h`<p class="lugar-dir">${publico}</p>` : ''}
+      ${sabe && (d.direccion || d.rubro) ? h`<p class="lugar-dir">${d.direccion || d.rubro}</p>` : ''}
       ${pn.dist != null ? h`<p class="tenue chico">A ${A.distTexto(pn.dist)} de vos</p>` : ''}
       <ul class="ofertas">${pn.renglones.map(r => h`<li><span class="oferta-nombre">${r.nombre}</span><strong class="oferta-precio${r.barato ? ' verde' : ''}">${N.plata(r.precio)}</strong><span class="oferta-detalle">${r.detalle}</span></li>`)}</ul>
-      <div class="acciones"><a class="btn btn-chico" href="${C.enlace(pn.k, pn.lat, pn.lon)}" target="_blank" rel="noopener">${ico('lugar')}Cómo llegar</a></div>
-      ${sabe ? h`<p class="gmaps" translate="no">Google Maps</p>` : ''}</div>`;
+      <div class="acciones"><a class="btn btn-chico" href="${C.enlace(pn.k, pn.lat, pn.lon)}" target="_blank" rel="noopener">${ico('lugar')}Cómo llegar</a></div></div>`;
   }
   const filaPin = (H, pn, i) => h`<li><button type="button" class="lugar" data-act="mapa-pin" data-k="${pn.k}"${atr('aria-current="true"', pn.k === H.pin)}>
-    <span class="lugar-nombre">${pn.nombre || (esObjeto(H.detalles[pn.k]) && H.detalles[pn.k].nombre) || `Comercio ${i + 1}`}</span><span class="lugar-dist">${pn.texto}</span>
+    <span class="lugar-nombre">${pn.nombre || pn.publico || (esObjeto(H.detalles[pn.k]) && H.detalles[pn.k].nombre) || `Comercio ${i + 1}`}</span><span class="lugar-dist">${pn.texto}</span>
     <span class="lugar-dir">${[pn.dist != null ? `a ${A.distTexto(pn.dist)}` : '', pn.renglones.slice(0, 3).map(r => r.nombre).join(', ') + (pn.renglones.length > 3 ? '…' : '')].filter(Boolean).join(' · ')}</span></button></li>`;
   const mapaActual = () => { const H = E.hoja, X = H && (H.sub || H); return X && X.tipo === 'mapa' ? X : null; };
   function pintarFichaMapa(H) {
@@ -4311,7 +4402,10 @@ const Cerca = (() => {
     if (!H.pines.some(x => x.k === k)) return;
     H.pin = k;
     if (!H.detalles[k]) {
-      H.detalles[k] = 'buscando';
+      const ya = C.conocido(k);
+      H.detalles[k] = ya || 'buscando';
+    }
+    if (H.detalles[k] === 'buscando') {
       C.detalle(k).then(d => { H.detalles[k] = d; }, () => { H.detalles[k] = 'fallo'; }).then(() => { if (mapaActual() === H) pintarFichaMapa(H); });
     }
     pintarFichaMapa(H);
@@ -4351,33 +4445,35 @@ const Cerca = (() => {
       let u = null;
       try { u = await C.ubicacion(c.ref); } catch (e) { u = null; }
       if (!u) continue;
-      pines.push({ k: c.ref, lat: u.lat, lon: u.lon, dist: pos ? A.distancia(pos.lat, pos.lon, u.lat, u.lon) : null, nombre: c.comercio, tono: 'mio', baratos: 0, texto: N.plata(c.precio),
+      pines.push({ k: c.ref, lat: u.lat, lon: u.lon, dist: pos ? A.distancia(pos.lat, pos.lon, u.lat, u.lon) : null, nombre: c.comercio, publico: '', tono: 'mio', baratos: 0, texto: N.plata(c.precio),
         renglones: [{ nombre: p.nombre, precio: c.precio, barato: false, detalle: `lo pagaste ${A.haceDias(hoy - c.dia)}` }] });
     }
     abrirMapa({ titulo: p.nombre, bajada: pos ? '' : 'Para ver también los precios de otros hogares, activá tu ubicación en Novedades.', pines, pin: pines.length ? pines[0].k : null });
   }
 
-  /* ---------- elegir el comercio en Google Maps ----------
+  /* ---------- elegir el comercio en el mapa ----------
      Una hoja encima de la que se está completando. Lo elegido queda anotado en el hogar como «este nombre es
-     este lugar de Google Maps», y el campo de la hoja de abajo recibe el nombre. */
+     este comercio», y el campo de la hoja de abajo recibe el nombre. Los comercios salen de OpenStreetMap y de
+     los que marcaron los hogares de la zona; si uno no figura, se lo marca en el mapa. */
   const CLASES_COMERCIO = ['Súper', 'Chino', 'Almacén', 'Verdulería', 'Carnicería', 'Panadería', 'Dietética', 'Farmacia', 'Mayorista', 'Kiosco'];
   const leerEn = (obj, ruta) => ruta.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj);
   const subComercio = () => { const H = E.hoja, S = H && H.sub; return S && S.tipo === 'comercio' ? S : null; };
   function abrirElegirComercio(para, campoId) {
     const H = E.hoja;
     if (!H || H.sub || !conMapa()) return;
-    const actual = limpio(leerEn(H, para)), buscar = refDeComercio(actual) ? '' : actual;      // el nombre de un comercio ya ubicado es del hogar, no de Google: no se busca
-    H.sub = { tipo: 'comercio', para, campo: campoId, paso: 'lista', texto: buscar, pedido: actual, cerca: null, estadoCerca: 'sin', notaCerca: '', sugeridos: null, estadoSug: '', elegido: null, nombre: '', error: '', ocupado: false, reloj: 0, vuelta: 0 };
+    const actual = limpio(leerEn(H, para)), buscar = refDeComercio(actual) ? '' : actual;      // el nombre de un comercio ya ubicado es del hogar: no se busca
+    H.sub = { tipo: 'comercio', para, campo: campoId, paso: 'lista', texto: buscar, pedido: actual, cerca: null, estadoCerca: 'sin', notaCerca: '', sugeridos: null, estadoSug: '', elegido: null, nombre: '', rubro: '', error: '', ocupado: false, reloj: 0, vuelta: 0, mapa: null };
     renderHoja(true);
     if (C.ultimaPosicion()) buscarCercanos(false);
-    if (buscar.length >= 3) sugerirComercios(0);
+    if (buscar.length >= 2) sugerirComercios(0);
   }
+  function soltarMapa(S) { if (S && S.mapa) { try { S.mapa.destruir(); } catch (e) { /* el mapa ya no estaba */ } S.mapa = null; } }
   function cerrarSub() {
     const H = E.hoja;
     if (!H || !H.sub) return;
     const campoId = H.sub.campo;
     clearTimeout(H.sub.reloj);
-    if (H.sub.mapa) { try { H.sub.mapa.destruir(); } catch (e) { /* el mapa ya no estaba */ } }
+    soltarMapa(H.sub);
     H.sub = null;
     renderHoja();
     const el = campoId && document.getElementById(campoId);
@@ -4385,15 +4481,15 @@ const Cerca = (() => {
   }
   const filaLugar = (l, i, de) => h`<li><button type="button" class="lugar" data-act="comercio-elegir" data-de="${de}" data-i="${i}">
     <span class="lugar-nombre">${l.nombre}</span>${l.dist != null ? h`<span class="lugar-dist">${A.distTexto(l.dist)}</span>` : ''}
-    <span class="lugar-dir">${l.direccion || ''}${E.ajustes.comercios[l.id] ? h`${l.direccion ? ' · ' : ''}<strong>ya lo anotaste como «${E.ajustes.comercios[l.id].n}»</strong>` : ''}</span></button></li>`;
+    <span class="lugar-dir">${[l.direccion || l.rubro || '', l.zona ? 'lo marcó un hogar' : ''].filter(Boolean).join(' · ')}${E.ajustes.comercios[l.id] ? h`${l.direccion || l.rubro || l.zona ? ' · ' : ''}<strong>ya lo anotaste como «${E.ajustes.comercios[l.id].n}»</strong>` : ''}</span></button></li>`;
   function htmlLugares(S) {
     const q = N.norm(S.texto), partes = [];
     const mios = Object.keys(E.ajustes.comercios).map(id => ({ id, n: E.ajustes.comercios[id].n })).filter(x => !q || N.norm(x.n).includes(q)).sort((a, b) => a.n.localeCompare(b.n, 'es'));
     if (S.sugeridos || S.estadoSug) {
       partes.push(h`<section><h3 class="rotulo">Con ese nombre</h3>
-        ${S.estadoSug === 'buscando' ? cargando('Buscando en Google Maps…') : S.estadoSug ? h`<p class="nota gris">${S.estadoSug}</p>`
+        ${S.estadoSug === 'buscando' ? cargando('Buscando…') : S.estadoSug ? h`<p class="nota gris">${S.estadoSug}</p>`
           : S.sugeridos.length ? h`<ul class="lugares">${S.sugeridos.map((l, i) => filaLugar(l, i, 'sug'))}</ul>`
-            : h`<p class="tenue chico">Google Maps no encontró un comercio con ese nombre. Probá con otro, o elegilo de la lista de abajo.</p>`}</section>`);
+            : h`<p class="tenue chico">No aparece ningún comercio con ese nombre cerca. Probá con otro nombre o marcalo en el mapa.</p>`}</section>`);
     }
     if (mios.length) {
       partes.push(h`<section><h3 class="rotulo">Tus comercios</h3><ul class="lugares">${mios.map(x => h`<li class="lugar-propio">
@@ -4403,9 +4499,12 @@ const Cerca = (() => {
     partes.push(h`<section><h3 class="rotulo">Cerca tuyo</h3>
       ${S.estadoCerca === 'buscando' ? cargando('Buscando comercios cerca…')
         : S.estadoCerca === 'listo' ? (S.cerca.length ? h`<ul class="lugares">${S.cerca.map((l, i) => filaLugar(l, i, 'cerca'))}</ul>`
-          : h`<p class="tenue chico">Google Maps no muestra comercios de alimentos a menos de 1,5 km. Buscalo por su nombre.</p>`)
+          : h`<p class="tenue chico">El mapa no muestra comercios de comida a menos de 1,5 km. Buscalo por su nombre o marcalo en el mapa.</p>`)
           : h`${S.notaCerca ? h`<p class="nota gris">${S.notaCerca}</p>` : ''}
             <div class="acciones"><button type="button" class="btn btn-chico" data-act="comercio-cerca">${ico('aca')}${S.estadoCerca === 'error' ? 'Probar de nuevo' : 'Buscar comercios cerca mío'}</button></div>`}</section>`);
+    partes.push(h`<section class="marcar"><h3 class="rotulo">¿No está?</h3>
+      <p class="tenue chico">Marcalo en el mapa: queda para vos y para los demás hogares de tu zona.</p>
+      <div class="acciones"><button type="button" class="btn btn-chico" data-act="comercio-marcar">${ico('lugar')}Marcarlo en el mapa</button></div></section>`);
     return partes;
   }
   function pintarLugares() {
@@ -4425,19 +4524,20 @@ const Cerca = (() => {
       const l = await C.cercanos(pos);
       if (!sigue()) return;
       S.cerca = l; S.estadoCerca = 'listo';
+      if (limpio(S.texto).length >= 2 && (!S.sugeridos || !S.sugeridos.length)) sugerirComercios(0);      // ahora hay dónde buscar
     } catch (e) {
       if (!sigue()) return;
       S.estadoCerca = 'error'; S.notaCerca = (e && e.texto) || 'No se pudieron buscar los comercios cercanos.';
     }
     pintarLugares();
   }
-  // Buscar por nombre: se espera a que la persona deje de escribir, para no consultar a Google por cada letra.
+  // Buscar por nombre: se espera a que la persona deje de escribir, para no consultar por cada letra.
   function sugerirComercios(espera) {
     const H = E.hoja, S = subComercio();
     if (!S) return;
     clearTimeout(S.reloj);
     const texto = limpio(S.texto), vuelta = ++S.vuelta;
-    if (texto.length < 3) { S.sugeridos = null; S.estadoSug = ''; pintarLugares(); return; }
+    if (texto.length < 2) { S.sugeridos = null; S.estadoSug = ''; pintarLugares(); return; }
     S.reloj = setTimeout(async () => {
       const sigue = () => E.hoja === H && H.sub === S && S.vuelta === vuelta;
       if (!sigue()) return;
@@ -4449,10 +4549,10 @@ const Cerca = (() => {
         S.sugeridos = l; S.estadoSug = '';
       } catch (e) {
         if (!sigue()) return;
-        S.sugeridos = []; S.estadoSug = (e && e.texto) || 'No se pudo buscar en Google Maps.';
+        S.sugeridos = []; S.estadoSug = (e && e.texto) || 'No se pudo buscar.';
       }
       pintarLugares();
-    }, espera == null ? 380 : espera);
+    }, espera == null ? 450 : espera);
   }
   function usarComercio(ref) {
     const H = E.hoja, S = subComercio(), n = nombreDeRef(ref);
@@ -4461,43 +4561,71 @@ const Cerca = (() => {
     H.sucio = true;
     cerrarSub();
   }
-  async function elegirLugar(de, i) {
-    const H = E.hoja, S = subComercio();
+  function elegirLugar(de, i) {
+    const S = subComercio();
     if (!S || S.ocupado) return;
-    const l = (de === 'sug' ? S.sugeridos : S.cerca || [])[i], sigue = () => E.hoja === H && H.sub === S;
+    const l = (de === 'sug' ? S.sugeridos : S.cerca || [])[i];
     if (!l) return;
     if (E.ajustes.comercios[l.id]) { usarComercio(l.id); return; }      // ya estaba ubicado: se usa con su nombre
-    let lat = l.lat, lon = l.lon;
-    if (!A.puntoValido(lat, lon)) {       // salió de buscar por nombre: falta pedirle a Google dónde queda
-      S.ocupado = true; S.error = '';
-      try { const u = await C.ubicarSugerido(l); lat = u.lat; lon = u.lon; }
-      catch (e) { if (sigue()) { S.ocupado = false; S.error = (e && e.texto) || 'No se pudo ubicar ese comercio. Probá de nuevo.'; renderHoja(); } return; }
-      if (!sigue()) return;
-      S.ocupado = false;
-    }
     const escrito = limpio(S.pedido);     // lo que ya decía el campo sirve de nombre, salvo que sea el de otro comercio
-    Object.assign(S, { paso: 'nombre', elegido: { id: l.id, nombre: l.nombre, direccion: l.direccion, lat, lon }, nombre: escrito && !refDeComercio(escrito) ? escrito.slice(0, 40) : '', error: '' });
+    Object.assign(S, { paso: 'nombre', elegido: { id: l.id, nombre: l.nombre, direccion: l.direccion, rubro: l.rubro, lat: l.lat, lon: l.lon }, nombre: escrito && !refDeComercio(escrito) ? escrito.slice(0, 40) : '', error: '' });
     renderHoja(true);
     const c = $('#lc-nombre');
     if (c) c.focus();
+  }
+  // Marcar en el mapa un comercio que no figura: el mapa con una cruz en el medio.
+  async function marcarEnMapa() {
+    const H = E.hoja, S = subComercio();
+    if (!S || S.ocupado) return;
+    const sigue = () => E.hoja === H && H.sub === S && S.paso === 'marcar';
+    Object.assign(S, { paso: 'marcar', error: '', mapa: null });
+    renderHoja(true);
+    let pos = C.ultimaPosicion();
+    if (!pos) { try { pos = await C.posicion(true); } catch (e) { pos = null; } }
+    if (!sigue()) return;
+    try {
+      const m = await C.dibujar($('#lc-mapa'), { mira: true, yo: pos, centro: pos });
+      if (!sigue()) { m.destruir(); return; }
+      S.mapa = m;
+      const b = $('#hoja [data-act="comercio-aca"]');
+      if (b) b.disabled = false;
+    } catch (e) {
+      if (!sigue()) return;
+      const el = $('#lc-mapa');
+      if (el) { el.classList.add('sin-mapa'); el.innerHTML = val(h`<p class="nota gris">${(e && e.texto) || 'No se pudo abrir el mapa.'}</p>`); }
+    }
+  }
+  function marcarAca() {
+    const S = subComercio();
+    if (!S || S.paso !== 'marcar' || !S.mapa) return;
+    const c = S.mapa.centro(), escrito = limpio(S.texto) || limpio(S.pedido);
+    soltarMapa(S);
+    Object.assign(S, { paso: 'nombre', elegido: { id: '', nuevo: true, nombre: '', direccion: '', lat: c.lat, lon: c.lon }, nombre: escrito && !refDeComercio(escrito) ? escrito.slice(0, 40) : '', rubro: '', error: '' });
+    renderHoja(true);
+    const n = $('#lc-nombre');
+    if (n) n.focus();
   }
   async function guardarComercioNuevo() {
     const H = E.hoja, S = subComercio();
     if (!S || S.paso !== 'nombre' || S.ocupado || !puede()) return;
     const n = limpio(S.nombre).slice(0, 40), l = S.elegido, otro = refDeComercio(n);
     const decir = texto => { S.error = texto; S.ocupado = false; renderHoja(); const c = $('#lc-nombre'); if (c) c.focus(); };
-    if (!n) return decir('Ponele un nombre: es como lo vas a ver en tus compras.');
+    if (!n) return decir(l.nuevo ? 'Poné el nombre del comercio, como figura en el cartel.' : 'Ponele un nombre: es como lo vas a ver en tus compras.');
     if (otro && otro !== l.id) return decir(`Ya tenés otro comercio anotado como «${nombreDeRef(otro)}». Ponele a este un nombre distinto, por ejemplo con la calle.`);
     S.ocupado = true;
-    try { await cambiarAjustes({ comercios: Object.assign({}, E.ajustes.comercios, { [l.id]: { n } }) }); }
-    catch (e) { if (E.hoja === H && H.sub === S) decir(textoFallo(e)); return; }
-    C.recordar(l.id, l.lat, l.lon);
+    renderHoja();
+    let id = l.id;
+    try {
+      if (l.nuevo) id = await C.marcar(n, l.lat, l.lon, S.rubro);
+      await cambiarAjustes({ comercios: Object.assign({}, E.ajustes.comercios, { [id]: { n } }) });
+    } catch (e) { if (E.hoja === H && H.sub === S) decir((e && e.texto) || textoFallo(e)); return; }
+    if (!l.nuevo) C.recordar(id, l.lat, l.lon, l.nombre, l.direccion, l.rubro);
     pintarComercios();
     if (E.hoja !== H || H.sub !== S) return;
     ponerEn(H, S.para, n);
     H.sucio = true;
     cerrarSub();
-    avisar(`${n} quedó ubicado en el mapa`);
+    avisar(l.nuevo ? `${n} quedó marcado en el mapa para tu zona` : `${n} quedó ubicado en el mapa`);
   }
 
   /* ---------- ticket: textos que se actualizan mientras se edita ---------- */
@@ -4881,7 +5009,7 @@ const Cerca = (() => {
         if (nuevo) recordarComercio(comercio);
         if (E.hoja === H) cerrarHoja();
         avisar(cambio ? `Guardado · ${cambio}` : 'Guardado'); pintar();
-        if (precioNuevo) trasCompra([{ id, precio, cant: 1 }], comercio).then(r => { if (r && r.baratos.length) avisar(`Otros hogares lo consiguieron más barato: ${textoOferta(r.baratos[0].oferta)}`, { rotulo: 'Ver', fn: () => verBaratos(r) }); });
+        if (precioNuevo) trasCompra([{ id, precio, cant: 1 }], comercio).then(r => { if (r && r.baratos.length) avisar(avisoBarato(r.baratos[0].oferta), { rotulo: 'Ver', fn: () => verBaratos(r) }); });
       } catch (e) { if (E.hoja === H) errorHoja(textoFallo(e, E.prod.has(id))); else falloGuardar(e, E.prod.has(id)); }
       return;
     }
@@ -4900,7 +5028,7 @@ const Cerca = (() => {
         despues.then(r => { if (r && E.hoja === H && H.estado === 'hecho') { H.cerca = r; renderHoja(); } });
       } else {
         cerrarHoja(); avisar(`${nombre} quedó en la alacena`);
-        despues.then(r => { if (r && r.baratos.length) avisar(`Otros hogares lo consiguieron más barato: ${textoOferta(r.baratos[0].oferta)}`, { rotulo: 'Ver', fn: () => verBaratos(r) }); });
+        despues.then(r => { if (r && r.baratos.length) avisar(avisoBarato(r.baratos[0].oferta), { rotulo: 'Ver', fn: () => verBaratos(r) }); });
       }
       trasGuardarPropio(); pintar();
     } catch (e) { if (E.hoja === H) errorHoja(textoFallo(e)); else falloGuardar(e); }
@@ -5375,8 +5503,25 @@ const Cerca = (() => {
       try { await Datos.notas.borrar(el.dataset.id); avisar('Nota borrada'); } catch (e) { avisar((e && e.texto) || textoFallo(e)); }
       pintar();
     },
-    // el comercio, en Google Maps
+    // el comercio, en el mapa
     'elegir-comercio'(el) { abrirElegirComercio(el.dataset.para, el.dataset.campo); },
+    'comercio-marcar'() { marcarEnMapa(); },
+    'comercio-aca'() { marcarAca(); },
+    'comercio-rubro'(el) {
+      const S = subComercio();
+      if (!S) return;
+      S.rubro = S.rubro === el.dataset.n ? '' : el.dataset.n;
+      for (const b of $$('#hoja [data-act="comercio-rubro"]')) { const si = b.dataset.n === S.rubro; b.classList.toggle('puesto', si); b.setAttribute('aria-pressed', si ? 'true' : 'false'); }
+    },
+    // ¿lo recomienda este hogar? Va con los precios que comparte
+    reco(el) {
+      const id = el.dataset.id, p = E.prod.get(id), v = +el.dataset.v;
+      if (!p || !puede()) return;
+      const nuevo = p.reco === v ? 0 : v;
+      E.prod.set(id, { ...p, reco: nuevo });
+      for (const b of $$(`#hoja [data-act="reco"][data-id="${id}"]`)) { const si = +b.dataset.v === nuevo; b.classList.toggle('puesto', si); b.setAttribute('aria-pressed', si ? 'true' : 'false'); }
+      enCola(id, () => escribir(() => E.db.doc('productos/' + id).update({ reco: nuevo }))).then(() => avisar(nuevo === 1 ? 'Lo recomendás: lo ven los hogares de tu zona cuando compartís el precio' : nuevo === -1 ? 'No lo recomendás: lo ven los hogares de tu zona cuando compartís el precio' : 'Sin opinión sobre este producto'), falloGuardar);
+    },
     'comercio-cerca'() { buscarCercanos(true); },
     'comercio-elegir'(el) { elegirLugar(el.dataset.de, +el.dataset.i); },
     'comercio-usar'(el) { usarComercio(el.dataset.ref); },
@@ -5396,7 +5541,7 @@ const Cerca = (() => {
       if (e) e.remove();
       c.focus();
     },
-    'comercio-volver'() { const S = subComercio(); if (!S || S.ocupado) return; Object.assign(S, { paso: 'lista', elegido: null, error: '' }); renderHoja(true); },
+    'comercio-volver'() { const S = subComercio(); if (!S || S.ocupado) return; soltarMapa(S); Object.assign(S, { paso: 'lista', elegido: null, error: '' }); renderHoja(true); },
     // los precios de la zona
     async 'cerca-activar'() {
       if (!puedeCerca()) return;
@@ -5428,7 +5573,7 @@ const Cerca = (() => {
       try { await cambiarAjustes({ compartir: true }); } catch (e) { falloGuardar(e); return; }
       E.porCompartir = null;
       let n = 0;
-      if (pend) { try { n = await C.aportar(pend.items, pend.ref, pend.dia); } catch (e) { n = 0; } }
+      if (pend) { try { n = await C.aportar(pend.items, pend.ref, pend.dia, E.ajustes.alias); } catch (e) { n = 0; } }
       if (n) E.cerca.t = 0;
       if (H && E.hoja === H && H.cerca) { H.cerca.preguntar = false; H.cerca.compartidos = n; renderHoja(); }
       else avisar(n ? `Listo: ${n === 1 ? 'el precio que anotaste ya lo ve' : `los ${n} precios que anotaste ya los ve`} tu zona` : 'Listo: los precios que anotes se comparten con tu zona');
@@ -5544,6 +5689,13 @@ const Cerca = (() => {
       cambiarAjustes({ compartir: si }).then(() => avisar(si ? 'Los precios que anotes con el comercio ubicado se comparten con tu zona' : 'Tus precios ya no se comparten'), falloGuardar);
       return;
     }
+    if (el.dataset && el.dataset.cambio === 'alias') {      // el nombre con el que la zona ve al hogar
+      const v = limpio(el.value).slice(0, 40);
+      if (v === E.ajustes.alias) return;
+      if (!puede()) { el.value = E.ajustes.alias; return; }
+      cambiarAjustes({ alias: v }).then(() => avisar(v ? `Tu zona te va a ver como «${v}»` : 'Tu zona te va a ver como «otro hogar»'), falloGuardar);
+      return;
+    }
     if (!el.dataset || el.dataset.cambio !== 'marcar') return;
     if (el.checked) E.marcados.add(el.dataset.id); else E.marcados.delete(el.dataset.id);
     guardarLocal('libreta.marcados', [...E.marcados]);
@@ -5553,7 +5705,8 @@ const Cerca = (() => {
   });
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape' && E.hoja) { e.preventDefault(); cerrarConCuidado(false); return; }
-    if (e.key === 'Enter' && e.target.id === 'aj-nombre') { e.preventDefault(); ACC['hogar-renombrar-si'](); return; }      // dentro de Ajustes, Enter guarda el nombre y no los ajustes
+    if (e.key === 'Enter' && e.target.id === 'aj-nombre') { e.preventDefault(); ACC['hogar-renombrar-si'](); return; }
+    if (e.key === 'Enter' && e.target.id === 'aj-alias') { e.preventDefault(); e.target.blur(); return; }      // se guarda al salir del campo      // dentro de Ajustes, Enter guarda el nombre y no los ajustes
     if ((e.key === 'Enter' || e.key === ' ') && e.target.matches && e.target.matches('g[data-act], img[data-act]')) { e.preventDefault(); ACC[e.target.dataset.act](e.target, e); return; }
     if (e.key === 'Tab' && E.hoja) {   // el foco no sale del diálogo
       const hoja = $('#hoja'), fs = $$('button, [href], input, select, textarea', hoja).filter(x => !x.disabled && x.offsetParent !== null);

@@ -60,18 +60,20 @@
 
   <h3>Tu hogar</h3>
   <p>Lo que cargan los integrantes: los productos, cuántos hay y cuándo se usaron o se compraron, los precios y en qué comercio, los gastos, las notas que se dejan entre ustedes y los ajustes. Estos datos se guardan en un servidor y <strong>solo los pueden ver y cambiar los integrantes de ese hogar</strong>. Para entrar a un hogar hace falta un código que da alguien que ya está adentro, que vale 15 minutos y sirve una sola vez.</p>
-  <p>De cada comercio que ubicás en el mapa queda el nombre que le pusiste y cuál es ese lugar en Google Maps (su identificador). El nombre y la dirección que muestra Google no se guardan: se le piden cada vez.</p>
+  <p>De cada comercio que ubicás en el mapa queda el nombre que le pusiste y cuál es (su identificador en OpenStreetMap, o el de la libreta si lo marcó un hogar). Si tu hogar eligió un <strong>nombre público</strong> en Ajustes, también queda guardado.</p>
 
   <h3>Lo que queda solo en tu teléfono</h3>
   <ul>
     <li>Las <strong>fotos de los tickets</strong>. No se suben a ningún servidor.</li>
     <li>Tu <strong>ubicación</strong>, si la activaste (ver más abajo).</li>
-    <li>Dónde quedan los comercios que ubicaste, por 30 días como mucho.</li>
+    <li>Dónde quedan y cómo se llaman los comercios que viste o ubicaste.</li>
     <li>Una copia de los datos de tu hogar, para que la libreta ande sin conexión, y preferencias (por ejemplo, qué notas ya leíste).</li>
   </ul>
 
   <h3>Los precios que tu hogar comparte con la zona</h3>
-  <p>Es optativo: lo decide cada hogar y se cambia cuando quieran en Ajustes. Si tu hogar comparte, por cada precio que anotan en un comercio ubicado en el mapa se guarda: el <strong>código de barras</strong> del producto, el <strong>precio</strong>, el <strong>día</strong>, el <strong>comercio</strong> (su identificador de Google Maps y dónde queda) y la zona. <strong>No lleva tu nombre, tu cuenta ni tu hogar</strong>, y no hay forma de saber quién lo cargó. Lo puede ver cualquier persona que use la libreta. Cada precio vale 30 días como mucho: después deja de mostrarse y, a los pocos días, se borra del servidor.</p>
+  <p>Es optativo: lo decide cada hogar y se cambia cuando quieran en Ajustes. Si tu hogar comparte, por cada precio que anotan en un comercio ubicado en el mapa se guarda: el <strong>código de barras</strong> del producto, el <strong>precio</strong>, el <strong>día</strong>, el <strong>comercio</strong> (su nombre, su identificador y dónde queda), la zona, si tu hogar <strong>recomienda</strong> ese producto y, si eligieron uno, el <strong>nombre público de tu hogar</strong> (por ejemplo «Familia García»). <strong>No lleva tu nombre, tu email, tu cuenta ni tu dirección.</strong> Sin nombre público, nadie puede saber qué hogar lo cargó. Lo puede ver cualquier persona que use la libreta. Cada precio vale 30 días como mucho: después deja de mostrarse y, a los pocos días, se borra del servidor.</p>
+  <h3>Los comercios que marcan los hogares</h3>
+  <p>Si un comercio no figura en el mapa, cualquier hogar lo puede marcar: se guarda su <strong>nombre</strong>, <strong>dónde queda</strong> y el rubro, para que lo vean los hogares de la zona. No dice quién lo marcó. Marcá solo comercios, nunca una casa particular.</p>
 
   <h3>Para qué se usan</h3>
   <p>Para que la libreta funcione: mostrarte tu alacena, armar la lista de compras, calcular cuánto subió cada cosa y avisarte dónde otros hogares consiguieron más barato. <strong>No hay publicidad, no se arman perfiles y no se venden ni se ceden datos.</strong></p>
@@ -79,21 +81,22 @@
   <h2 id="ubicacion">Ubicación y cámara</h2>
   <p>La libreta pide tu <strong>ubicación</strong> únicamente cuando tocás «Buscar comercios cerca mío» o «Usar mi ubicación». La usa para dos cosas:</p>
   <ul>
-    <li>pedirle a Google Maps los comercios que hay cerca (ese punto se le envía a Google);</li>
+    <li>pedirle a OpenStreetMap los comercios que hay cerca (se le envía un punto aproximado, el centro de un cuadro de 1 km);</li>
     <li>pedirle al servidor de la libreta los precios compartidos de tu zona (se le envía en qué cuadros del mapa estás, de unos 10 km de lado, no el punto exacto).</li>
   </ul>
-  <p>Tu ubicación no se guarda en tu hogar ni la ve ninguna otra persona. Queda en tu teléfono, y la borrás cuando quieras en Ajustes → «Olvidarla». Sin dar la ubicación la libreta anda igual: los comercios se pueden buscar por su nombre.</p>
+  <p>Tu ubicación no se guarda en tu hogar ni la ve ninguna otra persona. Queda en tu teléfono, y la borrás cuando quieras en Ajustes → «Olvidarla». Sin dar la ubicación la libreta anda igual: los comercios se anotan a mano o se marcan en el mapa.</p>
   <p>La <strong>cámara</strong> se usa para leer códigos de barras y para sacarle una foto a un ticket. El código se lee en el teléfono; las imágenes no salen de él.</p>
 
   <h2 id="terceros">Con quién se comparten</h2>
   <p>Con nadie, salvo los servicios que hacen falta para que la libreta funcione:</p>
   <table>
     <tr><th>Google Firebase</th><td>Guarda las cuentas (Firebase Authentication) y los datos de los hogares y los precios compartidos (Cloud Firestore), en servidores de Google.</td></tr>
-    <tr><th>Google Maps Platform</th><td>Busca los comercios y dibuja el mapa. Recibe lo que escribís al buscar un comercio y, si buscás cerca, tu ubicación.</td></tr>
+    <tr><th>OpenStreetMap (servicio Overpass)</th><td>Da los comercios cercanos. Recibe un punto aproximado y lo que escribís al buscar un comercio por su nombre.</td></tr>
+    <tr><th>OpenFreeMap y jsDelivr</th><td>Entregan las imágenes del mapa y la biblioteca que lo dibuja. Como cualquier sitio web, ven la dirección IP de tu conexión y qué parte del mapa mirás.</td></tr>
     <tr><th>Open Food Facts</th><td>Base pública de productos. Recibe el código de barras que escaneás, para decir de qué producto es.</td></tr>
     <tr><th>Google Fonts y el alojamiento del sitio</th><td>Entregan las tipografías y los archivos de la app. Como cualquier sitio web, ven la dirección IP de tu conexión.</td></tr>
   </table>
-  <p>Esta app usa los servicios de Google Maps Platform. Al usar las funciones de mapa y de búsqueda de comercios, quedás sujeto a las <a href="https://maps.google.com/help/terms_maps/" target="_blank" rel="noopener">Condiciones de Servicio Adicionales de Google Maps/Google Earth</a> y a la <a href="https://policies.google.com/privacy" target="_blank" rel="noopener">Política de Privacidad de Google</a>.</p>
+  <p>Los datos de los mapas y de los comercios son de <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© los colaboradores de OpenStreetMap</a>, disponibles bajo la licencia ODbL.</p>
   <p>La conexión con todos esos servicios va cifrada (HTTPS).</p>
 
   <h2 id="borrar">Cómo borrar tus datos</h2>
@@ -109,7 +112,7 @@
     <li>Cada producto, cada gasto y cada nota se puede borrar desde su propia pantalla.</li>
     <li>Ajustes → «Salir de este hogar» te saca del hogar; si eras la única persona, lo borra entero.</li>
     <li>Ajustes → «Olvidarla» borra del teléfono tu ubicación.</li>
-    <li>Los precios compartidos con la zona no están atados a ninguna cuenta, así que no se pueden buscar por persona: dejan de mostrarse a los 30 días como mucho y se borran solos a los pocos días. Para que tu hogar deje de compartir, destildá esa opción en Ajustes.</li>
+    <li>Los precios compartidos con la zona no están atados a ninguna cuenta, así que no se pueden buscar por persona: dejan de mostrarse a los 30 días como mucho y se borran solos a los pocos días. Para que tu hogar deje de compartir, destildá esa opción en Ajustes; para que deje de figurar su nombre público, borralo ahí mismo.</li>
   </ul>
   <h3>Si no podés entrar a la app</h3>
   <p>Escribí a <span data-email>el email que figura en la ficha de la app</span> desde el email de tu cuenta, pidiendo que se borre, y se borra dentro de los 30 días.</p>
@@ -126,7 +129,8 @@
     <li><strong>Tu hogar es de quienes lo integran.</strong> Cualquier integrante puede ver, cambiar y borrar lo que hay en el hogar, y quitar a otros integrantes. Invitá solo a personas de confianza.</li>
     <li><strong>Los precios de otros hogares son orientativos.</strong> Los cargan otras personas: pueden estar mal o haber cambiado. La libreta no garantiza precios, ofertas ni que haya mercadería.</li>
     <li><strong>Si compartís precios, que sean los que pagaste.</strong> No se pueden cargar precios falsos a propósito ni usar la libreta para perjudicar a un comercio o a otras personas. Se pueden quitar los precios falsos y cerrar las cuentas que abusen.</li>
-    <li><strong>Mapas.</strong> Los mapas y los datos de los comercios son de Google. Al usarlos quedás sujeto a las <a href="https://maps.google.com/help/terms_maps/" target="_blank" rel="noopener">Condiciones de Servicio Adicionales de Google Maps/Google Earth</a> y a la <a href="https://policies.google.com/privacy" target="_blank" rel="noopener">Política de Privacidad de Google</a>.</li>
+    <li><strong>Mapas.</strong> Los mapas y los datos de los comercios son de <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> (licencia ODbL) y pueden estar incompletos. Los comercios que marcan los hogares tienen que ser comercios de verdad: no se pueden marcar casas particulares ni lugares inventados.</li>
+    <li><strong>El nombre público de tu hogar</strong> lo ven otros hogares: no uses datos que no quieras mostrar, ni nombres ofensivos o de otras personas.</li>
     <li><strong>Sin garantías.</strong> La libreta se ofrece como está. Puede fallar o dejar de estar disponible, y no reemplaza un registro contable. Conviene bajar cada tanto una copia de tus datos: Ajustes → «Guardar una copia».</li>
     <li><strong>Cambios.</strong> Si estas condiciones o la política de privacidad cambian, la versión nueva se publica en esta misma página, con su fecha.</li>
     <li><strong>Ley aplicable.</strong> Estas condiciones se rigen por las leyes de la República Argentina.</li>

@@ -487,7 +487,7 @@ textarea.nota-campo { min-height: 84px; font: 400 16px/1.4 var(--f-ui); }
 .cp-total { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding-top: 10px; border-top: 1.5px solid var(--tinta); font-weight: 600; }
 .cp-total strong { font: 700 21px/1.2 var(--f-mono); text-align: right; }
 
-/* ---------- comercios y mapa (Google Maps) ---------- */
+/* ---------- comercios y mapa (OpenStreetMap) ---------- */
 .lc-resultados { display: flex; flex-direction: column; gap: 14px; }
 .lc-resultados section { display: flex; flex-direction: column; gap: 4px; }
 .lugares li { border-top: 1px solid var(--cuadro); }
@@ -519,6 +519,20 @@ textarea.nota-campo { min-height: 84px; font: 400 16px/1.4 var(--f-ui); }
 .pin.mio { background: #E3E9FB; }
 .pin.elegido { z-index: 3; background: #2343B5; color: #FFFFFF; }
 .pin-yo { position: absolute; width: 16px; height: 16px; margin: -8px 0 0 -8px; border: 3px solid #FFFFFF; border-radius: 50%; background: #2343B5; box-shadow: 0 0 0 1.5px #2343B5; pointer-events: none; }
+/* con MapLibre, cada cartel va dentro de su marca (la marca la mueve el mapa; el cartel solo se dibuja) */
+.marca { padding-bottom: 8px; }
+.marca.elegido { z-index: 3; }
+.marca .pin { position: relative; transform: none; display: block; }
+.maplibregl-marker > .pin-yo, .mapa .pin-yo.maplibregl-marker { margin: 0; }
+.mapa-mira { position: absolute; left: 50%; top: 50%; z-index: 2; width: 34px; height: 34px; margin: -17px 0 0 -17px; pointer-events: none;
+  background: linear-gradient(var(--birome), var(--birome)) center / 3px 100% no-repeat, linear-gradient(var(--birome), var(--birome)) center / 100% 3px no-repeat; filter: drop-shadow(0 0 1.5px #FFFFFF) drop-shadow(0 0 1.5px #FFFFFF); }
+.mapa.sin-fondo .mapa-lienzo { background: var(--hundido); }
+.mapa .maplibregl-ctrl-attrib { font-size: 11px; }
+.reco { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.reco > span { flex-basis: 100%; color: var(--tinta-2); font-size: 14px; }
+.chip.puesto { border-color: var(--birome); background: var(--birome); color: var(--sobre-birome); }
+.marcar .acciones { margin-top: 4px; }
+.gmaps-pie a { color: inherit; }
 .zona .casilla small { font-size: 13px; }
 
 @media (prefers-reduced-motion: reduce) {

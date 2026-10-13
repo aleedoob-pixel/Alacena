@@ -1,8 +1,8 @@
 /* Libreta del hogar — service worker.
    Guarda los archivos de la app en el teléfono para que abra aunque no haya conexión (en un almacén sin
    señal, por ejemplo). Los datos del hogar no pasan por acá: de esos se ocupa Firebase, que tiene su propia
-   copia en el teléfono. Google Maps tampoco: sus condiciones no dejan guardarlo, y sin conexión no hay mapa. */
-const CACHE = 'libreta-v3';
+   copia en el teléfono. El mapa tampoco: sin conexión no hay mapa, y la lista de comercios queda igual. */
+const CACHE = 'libreta-v4';
 const APP = ['./', 'index.html', 'estilos.css', 'app.js', 'config.js', 'manifest.webmanifest', 'privacidad.html', 'iconos/icono-192.png', 'iconos/icono-512.png'];
 // De otros sitios solo se guarda lo que la app necesita para arrancar: la biblioteca de Firebase y las tipografías.
 const AJENOS = ['www.gstatic.com', 'fonts.googleapis.com', 'fonts.gstatic.com'];

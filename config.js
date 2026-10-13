@@ -16,14 +16,12 @@ const firebaseConfig = {
   appId: "1:903231243553:web:9e6ae0a7aa3a2cb0556a60"
 };
 
-/* Clave de Google Maps (opcional).
+/* El mapa y la comunidad de la zona.
 
-   Con ella, los comercios se eligen en Google Maps y se ven en el mapa los precios que comparten otros
-   hogares de la zona. Sin ella, la libreta anda igual: los comercios se anotan a mano.
-   Se crea en https://console.cloud.google.com (APIs y servicios → Credenciales), con «Maps JavaScript API»
-   y «Places API (New)» habilitadas, y restringida a la dirección de tu sitio, como indica la guía.
-   Va entre las comillas. */
-const googleMapsKey = "";
+   Los comercios y el mapa salen de OpenStreetMap: son libres, no piden clave ni tarjeta. Con el mapa
+   encendido, cada hogar ubica sus comercios y ve dónde otros hogares de la zona consiguieron más barato.
+   Para apagarlo (los comercios se anotan a mano y no hay precios de la zona), poné false. */
+const mapasLibres = true;
 
 /* Quién responde por esta app (obligatorio para publicarla en Google Play).
 
