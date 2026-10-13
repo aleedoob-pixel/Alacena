@@ -2333,7 +2333,8 @@ const IA = (() => {
     if (/404|not.?found|is not supported|unsupported model/i.test(t)) return 'modelo';
     if (/403|PERMISSION_DENIED|API has not been used|disabled|billing/i.test(t)) return 'permiso';
     if (/SAFETY|blocked|PROHIBITED/i.test(t)) return 'bloqueado';
-    if (/fetch|network|Failed to fetch|unavailable|503|500/i.test(t)) return 'sin-red';
+    if (/high demand|overloaded|UNAVAILABLE|\[50[0-9] /i.test(t)) return 'saturado';
+    if (/fetch|network|Failed to fetch/i.test(t)) return 'sin-red';
     return 'otro';
   }
   // Saca el JSON de la respuesta, aunque venga envuelto en ```json … ```.
@@ -2350,24 +2351,26 @@ const IA = (() => {
     for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
     return btoa(s);
   }
-  // Un pedido: la consigna y, si hay, una foto. Si el modelo principal está saturado, prueba con el de respaldo.
-  async function pedir(consigna, foto, signal) {
+  /* Un pedido: la consigna y, si hay, una foto. Si un modelo está saturado, sin cuota o tarda demasiado, prueba
+     con el otro. `liviano`: empieza por el de respaldo, más rápido (para las comidas, donde no hay foto que leer). */
+  async function pedir(consigna, foto, signal, liviano) {
     if (navigator.onLine === false) throw { code: 'sin-red' };
     if (signal && signal.aborted) throw { code: 'cancelado' };
-    const modelos = await conTope(cargar(), 25000);
+    let modelos = await conTope(cargar(), 25000);
+    if (liviano) modelos = modelos.slice().reverse();
     const partes = [{ text: consigna }];
     if (foto) partes.push({ inlineData: { mimeType: foto.type || 'image/jpeg', data: await blob64(foto) } });
     const cancelar = new Promise((_, mal) => { if (signal) signal.addEventListener('abort', () => mal({ code: 'cancelado' })); });
     let ultimo = null;
     for (const m of modelos) {
       try {
-        const r = await Promise.race([conTope(m.generateContent(partes), 90000), cancelar]);
+        const r = await Promise.race([conTope(m.generateContent(partes), 45000), cancelar]);
         apagada = '';
         return leerJSON(r.response.text());
       } catch (e) {
         ultimo = e;
         const c = clase(e);
-        if (c !== 'cuota' && c !== 'modelo') break;
+        if (!['cuota', 'modelo', 'saturado', 'tarde'].includes(c)) break;
       }
     }
     if (clase(ultimo) === 'cuota') apagada = 'cuota';
@@ -2475,7 +2478,7 @@ ${lista.map((x, i) => `${i + 1}. ${x.texto} · ${x.cant} · ${x.cat}`).join('\n'
     // Propone comidas. `lista`: lo que hay en la alacena [{ id, texto, cant, cat }], lo fresco primero.
     async recetas(lista, opciones) {
       const o = Object.assign({ comida: 'comida', personas: 4, anteriores: [] }, opciones || {});
-      const r = await pedir(promptRecetas(lista, o), null, o.signal);
+      const r = await pedir(promptRecetas(lista, o), null, o.signal, true);
       return normalizarRecetas(r, lista);
     },
     // Qué decirle a la persona cuando algo falla.
@@ -2483,6 +2486,7 @@ ${lista.map((x, i) => `${i + 1}. ${x.texto} · ${x.cant} · ${x.cat}`).join('\n'
       switch (clase(e)) {
         case 'sin-red': return 'No hay conexión con la IA. Revisá internet y probá de nuevo.';
         case 'tarde': return 'La IA tardó demasiado en contestar. Probá de nuevo en un rato.';
+        case 'saturado': return 'La IA está muy pedida en este momento. Probá de nuevo en un rato.';
         case 'cuota': return 'La IA gratis llegó a su límite por ahora. Probá en un rato o mañana.';
         case 'verificacion': return 'La IA no pudo verificar que la pedís desde la libreta. Recargá la página y probá de nuevo.';
         case 'permiso': case 'modelo': return 'La IA no está habilitada en este momento. Probá más tarde.';
