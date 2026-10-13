@@ -72,6 +72,8 @@
 
   <h3>Los precios que tu hogar comparte con la zona</h3>
   <p>Es optativo: lo decide cada hogar y se cambia cuando quieran en Ajustes. Si tu hogar comparte, por cada precio que anotan en un comercio ubicado en el mapa se guarda: el <strong>código de barras</strong> del producto, el <strong>precio</strong>, el <strong>día</strong>, el <strong>comercio</strong> (su nombre, su identificador y dónde queda), la zona, si tu hogar <strong>recomienda</strong> ese producto y, si eligieron uno, el <strong>nombre público de tu hogar</strong> (por ejemplo «Familia García»). <strong>No lleva tu nombre, tu email, tu cuenta ni tu dirección.</strong> Sin nombre público, nadie puede saber qué hogar lo cargó. Lo puede ver cualquier persona que use la libreta. Cada precio vale 30 días como mucho: después deja de mostrarse y, a los pocos días, se borra del servidor.</p>
+  <h3>Las promos que cargan los hogares</h3>
+  <p>Cualquier hogar puede cargar una promo de un comercio de la zona (por ejemplo, «20 % los miércoles con tal billetera»): queda el comercio, el texto, el medio de pago, los días, hasta cuándo vale y, si eligieron uno, el nombre público del hogar. La ven los hogares de la zona y se borra sola cuando vence.</p>
   <h3>Los comercios que marcan los hogares</h3>
   <p>Si un comercio no figura en el mapa, cualquier hogar lo puede marcar: se guarda su <strong>nombre</strong>, <strong>dónde queda</strong> y el rubro, para que lo vean los hogares de la zona. No dice quién lo marcó. Marcá solo comercios, nunca una casa particular.</p>
 
@@ -92,6 +94,7 @@
   <table>
     <tr><th>Google Firebase</th><td>Guarda las cuentas (Firebase Authentication) y los datos de los hogares y los precios compartidos (Cloud Firestore), en servidores de Google.</td></tr>
     <tr><th>Photon (Komoot) y Overpass</th><td>Buscan comercios en los datos de OpenStreetMap. Reciben un punto aproximado, lo que escribís al buscar un comercio por su nombre y, a veces, cuál es el comercio del que hace falta la dirección.</td></tr>
+    <tr><th>Precios oficiales (SEPA)</th><td>Los precios que publican los supermercados por ley, tomados de los datos abiertos del Estado argentino y preparados todos los días en GitHub. Para mostrarlos, el teléfono pide a GitHub los de su zona (un cuadro de unos 10 km); no se envía nada tuyo.</td></tr>
     <tr><th>OpenFreeMap y jsDelivr</th><td>Entregan las imágenes del mapa y la biblioteca que lo dibuja. Como cualquier sitio web, ven la dirección IP de tu conexión y qué parte del mapa mirás.</td></tr>
     <tr><th>Open Food Facts</th><td>Base pública de productos. Recibe el código de barras que escaneás, para decir de qué producto es.</td></tr>
     <tr><th>Google Fonts y el alojamiento del sitio</th><td>Entregan las tipografías y los archivos de la app. Como cualquier sitio web, ven la dirección IP de tu conexión.</td></tr>

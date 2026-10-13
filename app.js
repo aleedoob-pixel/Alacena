@@ -584,7 +584,7 @@ const Nucleo = (() => {
   /* Devuelve cómo viene un producto:
      modo   'uso' (hay consumo anotado), 'compra' (se estima por cada cuánto se compra) o 'sin' datos
      ritmo  unidades por día · dias: para cuántos días alcanza
-     motivo null (no hace falta) | 'agotado' | 'ritmo' | 'cadencia' | 'aviso'
+     motivo null (no hace falta) | 'agotado' | 'ritmo' | 'cadencia' | 'aviso' | 'pedido' (alguien de la casa lo anotó en la lista)
      cant   cuánto conviene comprar */
   function analizar(p, hoy, frec) {
     const log = Array.isArray(p.log) ? p.log : [];
@@ -622,14 +622,17 @@ const Nucleo = (() => {
       else if (ritmo > 0 && stockEf < ritmo * horizonte - 1e-9) motivo = modo === 'compra' ? 'cadencia' : 'ritmo';
       else if (modo !== 'compra' && aviso > 0 && stock <= aviso) motivo = 'aviso';
     }
+    // lo anotó alguien en la lista (p.pedido: el día) y no se compró desde entonces
+    const pedido = +p.pedido > 0 && !(ult && ult[0] >= +p.pedido) && +p.pedido <= hoy + 1;
+    if (!motivo && pedido) motivo = 'pedido';
     if (motivo) {
       if (ritmo > 0) cant = Math.ceil(ritmo * horizonte - stockEf - 1e-9);
       else cant = habitual;
       if (motivo === 'aviso') cant = Math.max(cant, aviso + 1 - stock);
       cant = Math.max(1, cant);
     }
-    const urgencia = motivo === 'agotado' ? -1 : motivo === 'aviso' && !(ritmo > 0) ? 1000 + stock : dias;
-    return { modo, ritmo, dias, stock, stockEf, aviso, motivo, cant, cadaDias, diasUltCompra: ult ? hoy - ult[0] : null, urgencia, diario: esDiario(p) };
+    const urgencia = motivo === 'agotado' ? -1 : motivo === 'pedido' ? -0.5 : motivo === 'aviso' && !(ritmo > 0) ? 1000 + stock : dias;
+    return { modo, ritmo, dias, stock, stockEf, aviso, motivo, cant, cadaDias, diasUltCompra: ult ? hoy - ult[0] : null, urgencia, diario: esDiario(p), pedido };
   }
 
   const n1 = x => (x >= 9.95 ? nf0.format(x) : nf1.format(x));
@@ -654,6 +657,7 @@ const Nucleo = (() => {
       case 'ritmo': return `${quedan(a.stock)} · se usa ${ritmoTexto(a.ritmo)} · ${alcanzaTexto(a.dias)}`;
       case 'cadencia': return `Lo comprás cada ~${Math.max(1, Math.round(a.cadaDias))} días · última compra hace ${a.diasUltCompra} ${plural(a.diasUltCompra, 'día', 'días')}`;
       case 'aviso': return `${quedan(a.stock)} · avisa con ${a.aviso} o menos`;
+      case 'pedido': return 'Lo anotaron en la lista';
       default: return '';
     }
   }
@@ -663,6 +667,7 @@ const Nucleo = (() => {
     if (a.motivo === 'ritmo') return { tono: 'ambar', etiqueta: 'Queda poco', texto: alcanzaTexto(a.dias) };
     if (a.motivo === 'aviso') return { tono: 'ambar', etiqueta: 'Queda poco', texto: '' };
     if (a.motivo === 'cadencia') return { tono: 'ambar', etiqueta: 'Toca reponer', texto: `lo comprás cada ~${Math.max(1, Math.round(a.cadaDias))} días` };
+    if (a.motivo === 'pedido') return { tono: 'ambar', etiqueta: 'En la lista', texto: '' };
     if (a.modo === 'uso') return { tono: '', etiqueta: '', texto: alcanzaTexto(a.dias) };
     return { tono: '', etiqueta: '', texto: '' };
   }
@@ -931,7 +936,7 @@ const Ahorro = (() => {
   const conviene = (o, precio) => precio > 0 && !o.propio && o.precio <= precio * 0.97 && o.precio >= precio * 0.4;
   const masBaratos = (cerca, precio) => (cerca || []).filter(o => conviene(o, precio));
   // Quién lo cargó: el nombre público del hogar, si eligió uno; y cuántas veces se confirmó ese precio.
-  const origen = o => (o.propio ? 'lo cargó tu hogar' : `lo cargó ${o.hogar || 'otro hogar'}`) + (o.cuantos > 1 ? ` · confirmado ${o.cuantos} veces` : '');
+  const origen = o => (o.oficial ? 'precio oficial del súper' : (o.propio ? 'lo cargó tu hogar' : `lo cargó ${o.hogar || 'otro hogar'}`) + (o.cuantos > 1 ? ` · confirmado ${o.cuantos} veces` : ''));
   // Cuántos hogares de la zona recomiendan (o no) un producto, sumando lo de cada comercio: «3 lo recomiendan · 1 no».
   function recoTexto(l) {
     let si = 0, no = 0;
@@ -1350,6 +1355,7 @@ const Fotos = (() => {
      precios/{zona_código_comercio}     los precios que los hogares comparten con su zona: sin cuentas ni nombres de
                                         personas; con el nombre público del hogar, si eligió uno
      comercios/{id}                     los comercios que marcan los hogares cuando no figuran en OpenStreetMap
+     promos/{id}                        las promociones que cargan los hogares: qué comercio, qué días, con qué medio de pago
    Quién puede leer y escribir cada cosa lo deciden las reglas de firestore.rules.
 
    Hay dos maneras de escribir, y se usan para cosas distintas:
@@ -2155,6 +2161,32 @@ const Datos = (() => {
     },
   };
 
+  /* ---------- promociones de la zona ----------
+     { z, k, n, t, m, pct, dias, hasta, x, d, la, lo, h }: cuadro, comercio (cuál y su nombre), texto, medio de pago,
+     porcentaje, días de la semana (0 domingo … 6 sábado; vacío: todos), último día que vale, cuándo se puede borrar,
+     día en que se cargó, dónde queda el comercio y el nombre público del hogar. */
+  const promos = {
+    async buscar(zonas) {
+      const { fs, db: base } = F, out = [];
+      for (let i = 0; i < zonas.length; i += 30) {
+        const s = await conTope(fs.getDocs(fs.query(fs.collection(base, 'promos'), fs.where('z', 'in', zonas.slice(i, i + 30)))), 20000);
+        for (const d of s.docs) out.push(Object.assign({ id: d.id }, d.data()));
+      }
+      return out;
+    },
+    async crear(r) {
+      const id = idNuevo();
+      const dato = { z: String(r.z), k: String(r.k), n: String(r.n).slice(0, 60), t: String(r.t).slice(0, 120), m: String(r.m || '').slice(0, 40), pct: Math.round(+r.pct) || 0,
+        dias: (r.dias || []).map(Number).filter(x => Number.isInteger(x) && x >= 0 && x <= 6), hasta: Math.round(r.hasta), d: Math.round(r.d), la: +r.la, lo: +r.lo, h: String(r.h || '').slice(0, 40) };
+      dato.x = F.fs.Timestamp.fromMillis((dato.hasta + 2) * 864e5);
+      const envio = F.fs.setDoc(F.fs.doc(F.db, 'promos', id), dato);
+      const ok = await Promise.race([envio.then(() => true, () => false), pausa(2500).then(() => true)]);
+      if (!ok) throw { code: 'permission-denied', texto: 'El servidor no aceptó la promo: falta publicar las reglas nuevas (el archivo firestore.rules).' };
+      return id;
+    },
+    borrar(id) { try { F.fs.deleteDoc(F.fs.doc(F.db, 'promos', String(id))).catch(() => {}); } catch (e) { /* la borrará otro */ } },
+  };
+
   /* ---------- copia de seguridad ---------- */
   const copia = {
     // Con el mismo formato que la libreta que guarda en el navegador, así una copia sirve en las dos.
@@ -2220,12 +2252,13 @@ const Datos = (() => {
     notas: notasDelHogar,
     precios,
     comercios,
+    promos,
     mover,
     textos: {
       sinConexion: 'No se pudo abrir la conexión con el servidor. Revisá internet y recargá la página.',
       donde: 'Los datos de este hogar se guardan en Firebase, un servicio de Google, y los ven solo sus integrantes. Cada teléfono guarda una copia para seguir andando sin conexión. Las fotos de los tickets quedan en el teléfono donde se cargaron.',
       fallo: 'No se pudo guardar. Revisá la conexión y probá de nuevo.',
-      version: 'Libreta del hogar · versión 2.1.0 (2026-10-13)',       // el número y la fecha los pone armar.js
+      version: 'Libreta del hogar · versión 2.2.0 (2026-10-13)',       // el número y la fecha los pone armar.js
     },
     /* Devuelve { db, permiso } si en este teléfono ya hay una cuenta con su hogar. Si no, { puerta, alEntrar }:
        la app muestra la entrada y `alEntrar` se cumple cuando se entra a un hogar. null: sin conexión. */
@@ -2342,6 +2375,11 @@ const Cerca = (() => {
                                    // en el campo, los del pueblo de al lado)
   const RADIO_NOMBRE = 30000;      // metros: hasta dónde sirve un comercio buscado por su nombre
   const RADIO_ZONA = 4000;         // metros: hasta dónde interesan los precios de otros hogares
+  const VALE = 15;                 // días que vale un precio compartido: con la inflación, uno más viejo ya no dice mucho
+  // Los precios oficiales de los supermercados (SEPA), ya preparados por zona: config.js dice dónde están.
+  let OFICIALES = '';
+  try { if (typeof preciosOficiales === 'string' && /^https?:\/\//.test(preciosOficiales.trim())) OFICIALES = preciosOficiales.trim().replace(/\/?$/, '/'); } catch (e) { /* config.js no lo trae */ }
+  if (!OFICIALES && typeof window.LIBRETA_OFICIALES === 'string') OFICIALES = window.LIBRETA_OFICIALES;
   const PASO_OSM = 0.005;          // los cercanos se guardan por cuadros de media centésima de grado (~500 m)
   const VIDA_OSM = 14 * DIA;       // y se vuelven a pedir a las dos semanas
   const MAX_LUGARES = 400;         // cuántos comercios recuerda el teléfono (dónde quedan y cómo se llaman)
@@ -2601,16 +2639,69 @@ const Cerca = (() => {
       if (!crudos.has(d.e)) crudos.set(d.e, []);
       crudos.get(d.e).push({ precio: +d.p, k: String(d.k), lat: +d.la, lon: +d.lo, dia: +d.d, cuantos: +d.c || 1, comercio: typeof d.n === 'string' ? d.n : '', hogar: typeof d.h === 'string' ? d.h : '', si: +d.qs || 0, no: +d.qn || 0 });
     }
+    try { await sumarOficiales(pos, codigos, crudos); } catch (e) { /* sin los oficiales esta vez */ }
     for (const [e, l] of crudos) { const o = A.ordenarCerca(l, pos, RADIO_ZONA); if (o.length) out.set(e, o); }
     return out;
+  }
+
+  /* ---------- los precios oficiales (SEPA) ----------
+     Cada cuadro de la zona es un archivo comprimido, que se arma una vez por día con los datos abiertos del Estado:
+       { fecha: 'AAAA-MM-DD', s: [[cadena, sucursal, dirección, lat, lon], …], l: [leyenda de promo, …],
+         p: { código (14 dígitos): [[sucursal, precio de lista, promo para todos, promo con condiciones, leyenda], …] } }
+     Se guarda en memoria por la visita; el navegador, además, lo tiene en su caché. */
+  const cuadrosOficiales = new Map();          // cuadro → Promise<datos | null>
+  function cuadroOficial(z) {
+    if (!cuadrosOficiales.has(z)) {
+      const p = (async () => {
+        const r = await fetch(`${OFICIALES}celdas/${z}.json.gz`);
+        if (r.status === 404) return null;
+        if (!r.ok) throw { code: 'error', message: 'HTTP ' + r.status };
+        const b = new Uint8Array(await r.arrayBuffer());
+        // viene comprimido; si el servidor ya lo descomprimió en el camino, llega como texto
+        if (b[0] === 0x1f && b[1] === 0x8b) {
+          if (typeof DecompressionStream !== 'function') return null;
+          return JSON.parse(await new Response(new Blob([b]).stream().pipeThrough(new DecompressionStream('gzip'))).text());
+        }
+        return JSON.parse(new TextDecoder().decode(b));
+      })();
+      cuadrosOficiales.set(z, p);
+      p.catch(() => cuadrosOficiales.delete(z));
+    }
+    return cuadrosOficiales.get(z);
+  }
+  async function sumarOficiales(pos, codigos, crudos) {
+    if (!OFICIALES) return;
+    const zonas = A.celdasCerca(pos.lat, pos.lon, RADIO_ZONA), buscados = new Set(codigos.filter(Boolean)), hoy = N.diaDe(N.hoyISO());
+    const cuadros = await Promise.all(zonas.map(z => cuadroOficial(z).catch(() => null)));
+    for (const c of cuadros) {
+      if (!c || !c.p || !Array.isArray(c.s) || !N.fechaValida(c.fecha)) continue;
+      const dia = N.diaDe(c.fecha);
+      if (dia < hoy - 7) continue;                // datos de hace más de una semana: no
+      for (const e of buscados) {
+        for (const x of c.p[e] || []) {
+          const suc = c.s[x[0]];
+          if (!suc || !A.puntoValido(suc[3], suc[4])) continue;
+          const lista = +x[1], promo = +x[2] > 0 ? +x[2] : 0, precio = promo > 0 && promo < lista ? promo : lista;
+          if (!(precio > 0)) continue;
+          const k = `sepa:${suc[0]}:${x[0]}:${suc[3]},${suc[4]}`, nombre = [suc[0], suc[1]].filter(Boolean).join(' ').slice(0, 60);
+          conocer({ id: k, nombre, direccion: String(suc[2] || ''), rubro: 'Supermercado', lat: suc[3], lon: suc[4] });
+          const o = { precio, k, lat: suc[3], lon: suc[4], dia, cuantos: 1, comercio: nombre, hogar: '', si: 0, no: 0, oficial: true };
+          if (+x[3] > 0 && +x[3] < precio) o.promo = { precio: +x[3], texto: String((c.l || [])[x[4]] || '').slice(0, 90) };
+          if (!crudos.has(e)) crudos.set(e, []);
+          crudos.get(e).push(o);
+        }
+      }
+    }
   }
   /* Lo que este hogar pagó, para la zona. items: [{ codigo, precio, reco }] (reco: 1 lo recomienda, -1 no, 0 nada)
      ref: el comercio · dia: el de la compra · quien: el nombre público del hogar ('' si no eligió ninguno).
      Devuelve cuántos precios quedaron anotados (los que el servidor rechaza no cuentan). */
   const CLAVE_VOTOS = 'libreta.votos';
-  async function aportar(items, ref, dia, quien) {
-    const l = await detalle(ref);
-    const z = A.celda(l.lat, l.lon), vence = dia + 30;
+  async function aportar(items, ref, dia, quien, lugar) {
+    // dónde queda y cómo se llama: lo que ya sabe el hogar o, si no, lo que diga el mapa
+    let l = lugar && A.puntoValido(lugar.lat, lugar.lon) && lugar.nombre ? lugar : null;
+    if (!l) { const d = await detalle(ref); l = { lat: d.lat, lon: d.lon, nombre: d.nombre }; }
+    const z = A.celda(l.lat, l.lon), vence = dia + VALE;
     const validos = items.filter(it => it.precio > 0 && it.codigo);
     let previos = [];
     try { previos = await Datos.precios.buscar(validos.map(it => `${z}_${it.codigo}`)); } catch (e) { previos = []; }
@@ -2627,6 +2718,30 @@ const Cerca = (() => {
     guardar(CLAVE_VOTOS, [...votos].slice(-500));
     return hechos.filter(Boolean).length;
   }
+
+  /* ---------- promos de la zona ----------
+     Las que cargan los hogares: por día, banco o billetera. Las vencidas no se muestran y se borran. */
+  async function promos(pos) {
+    if (!Datos.promos) return [];
+    const zonas = A.celdasCerca(pos.lat, pos.lon, RADIO_ZONA), hoy = N.diaDe(N.hoyISO());
+    let docs;
+    try { docs = await Datos.promos.buscar(zonas); }
+    catch (e) {
+      const crudo = String((e && (e.code || e.message)) || '');
+      throw { code: 'cerca/promos', crudo, texto: /permission-denied/.test(crudo) ? 'Firebase no deja leer las promos: falta publicar las reglas nuevas (el archivo firestore.rules).' : 'No se pudieron traer las promos de tu zona. Revisá la conexión.' };
+    }
+    const out = [];
+    for (const d of docs) {
+      if (!(d.hasta >= hoy)) { if (d.hasta < hoy - 2) Datos.promos.borrar(d.id); continue; }
+      if (!A.puntoValido(d.la, d.lo)) continue;
+      const dist = A.distancia(pos.lat, pos.lon, d.la, d.lo);
+      if (dist > RADIO_ZONA) continue;
+      out.push({ id: d.id, k: String(d.k), n: String(d.n || 'Comercio'), t: String(d.t || ''), m: String(d.m || ''), pct: +d.pct || 0, hasta: +d.hasta, h: String(d.h || ''),
+        dias: Array.isArray(d.dias) ? d.dias.filter(x => Number.isInteger(x) && x >= 0 && x <= 6) : [], lat: d.la, lon: d.lo, dist });
+    }
+    return out.sort((a, b) => b.pct - a.pct || a.dist - b.dist);
+  }
+  const cargarPromo = r => Datos.promos.crear(Object.assign({ z: A.celda(r.la, r.lo) }, r));
 
   /* Una vez por día, este teléfono borra del servidor los precios que vencieron hace más de dos días, de la zona
      que sean: así no quedan guardados aunque nadie vuelva a pasar por donde se cargaron. Devuelve cuántos borró. */
@@ -2740,8 +2855,8 @@ const Cerca = (() => {
       } catch (e) { throw conPista(e); }
     },
     posicion, ultimaPosicion, olvidarPosicion,
-    cercanos, sugerir, ubicarSugerido, detalle, ubicacion, recordar, marcar, enlace, conocido: deMemoria,
-    buscar, aportar, limpiar, dibujar,
+    cercanos, sugerir, ubicarSugerido, detalle, ubicacion, recordar, marcar, enlace, conocido: deMemoria, conOficiales: () => !!OFICIALES,
+    buscar, aportar, limpiar, dibujar, promos, cargarPromo,
     RADIO_ZONA,
   };
 })();
@@ -2794,6 +2909,8 @@ const Cerca = (() => {
     motivo: '',         // por qué no hay conexión con los datos, si se sabe
     // lo que otros hogares de la zona pagaron por productos de este: porId es id de producto → sus precios, del más barato al más caro
     cerca: { estado: 'sin', pos: null, porId: new Map(), firma: '', t: 0, nota: '' },
+    promos: { estado: 'sin', lista: [], t: 0, nota: '' },        // las promos de la zona (por día, banco o billetera)
+    modoEscaneo: null,                                            // 'precio': se escanea en la góndola, para saber si conviene
     porCompartir: null, // precios recién anotados que esperan que el hogar decida si comparte
   };
   let V = { prods: [], compras: [], tickets: [], plan: null, cerca: new Map() };   // lo que se ve, calculado en cada pintada
@@ -3121,14 +3238,15 @@ const Cerca = (() => {
   const listaDiag = pasos => h`<ul class="diag">${pasos.map(p => h`<li class="${p.ok ? 'bien' : 'mal'}"><strong>${p.ok ? '✓' : '✗'} ${p.nombre}</strong>${p.detalle ? h` — ${p.detalle}` : ''}${p.crudo ? h`<code>${p.crudo}</code>` : ''}</li>`)}</ul>`;
   // Lo que se cuenta la primera vez (y cuando se lo pide desde Ajustes).
   const TUTORIAL_BASE = [
-    ['escanear', 'Tu alacena, en el teléfono', 'Escaneá el código de barras de cada producto y anotá cuántos hay. Cada vez que se termina uno, tocás −. La libreta aprende cuánto se consume en tu casa.'],
-    ['compras', 'La lista de compras se arma sola', 'Con lo que se terminó o está por terminarse, y con cuánto llevar. Al comprar anotás el precio: así ves cuánto subió cada cosa y dónde conviene comprarla.'],
-    ['familia', 'Toda la familia en el mismo hogar', 'Cada persona entra con su cuenta de Google y se suma con un código. Lo que anota uno lo ven todos al instante, y se pueden dejar notas: «faltan pañales», «hoy cocino yo».'],
-    ['gastos', 'El gasto del mes, a la vista', 'Cada compra queda anotada en Gastos: cuánto se va gastando mes a mes, en qué, y cuánto queda del presupuesto.'],
+    ['compras', 'Tu lista de compras, sola', 'Cargá lo que hay en casa escaneando el código de barras. La libreta aprende cada cuánto comprás cada cosa y arma la lista: la de la compra grande y la del día a día. Si querés más precisión, tocá − cuando se termina algo; no hace falta.'],
+    ['escanear', 'Escaneá el precio en la góndola', 'En el súper, tocá «Escanear un precio» y apuntá al código de barras: ves al instante cuánto lo pagaste la última vez y si está bien de precio. Con un toque lo anotás.'],
+    ['familia', 'Toda la familia en el mismo hogar', 'Cada persona entra con su cuenta de Google y se suma con un código. Lo que anota uno lo ven todos al instante. Antes de salir, «Aviso que voy» le pregunta a la familia si falta algo.'],
+    ['gastos', 'Cuánto gastás y cuánto ahorrás', 'Cada compra queda anotada en Gastos: cuánto se va por mes, en qué y cuánto subió cada cosa. Y en Novedades, cuánto ahorraste gracias a otros hogares.'],
   ];
   // Con el mapa encendido hay un paso más: la comunidad de hogares de la zona.
-  const PASO_ZONA = ['mapa', 'Una comunidad de hogares', 'Si ubicás el comercio en el mapa, la libreta te avisa cuando otro hogar de tu zona consiguió lo mismo más barato, y dónde. Compartir tus precios es optativo: van con el nombre que elijas para tu hogar, nunca con el tuyo.'];
+  const PASO_ZONA = ['mapa', 'Una comunidad de hogares', 'Cuando anotás lo que pagaste, la libreta te avisa si otro hogar de tu zona lo consiguió más barato, y dónde. También ves los precios oficiales de los supermercados y las promos del día con tu banco o billetera. Compartir es optativo: va con el nombre que elijas para tu hogar, nunca con el tuyo.'];
   const pasosTutorial = () => (conMapa() ? [TUTORIAL_BASE[0], TUTORIAL_BASE[1], PASO_ZONA, TUTORIAL_BASE[2], TUTORIAL_BASE[3]] : TUTORIAL_BASE);
+  const DIAS_SEMANA = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
   function vistaTutorial(paso, acciones) {
     const TUTORIAL = pasosTutorial(), [icono, titulo, texto] = TUTORIAL[Math.max(0, Math.min(TUTORIAL.length - 1, paso))];
     return h`<div class="tutorial" id="tutorial"><div class="tut-ico">${ico(icono)}</div>
@@ -3280,11 +3398,13 @@ const Cerca = (() => {
       const c = d.comercios[k];
       if (!esObjeto(c) || typeof c.n !== 'string' || !c.n) continue;
       comercios[k] = A.puntoValido(c.la, c.lo) ? { n: c.n, la: c.la, lo: c.lo } : { n: c.n };      // dónde queda: es un comercio, no una casa
+      if (typeof c.p === 'string' && c.p) comercios[k].p = c.p.slice(0, 60);                      // y cómo se llama de verdad
     }
     return {
       frecuencia: N.FRECUENCIAS.includes(d.frecuencia) ? d.frecuencia : 7, presupuesto: +d.presupuesto > 0 ? +d.presupuesto : 0,
       compartir: d.compartir === true ? true : d.compartir === false ? false : null, comercios,
       alias: typeof d.alias === 'string' ? d.alias.slice(0, 40) : '',
+      ahorro: esObjeto(d.ahorro) ? Object.fromEntries(Object.entries(d.ahorro).filter(([m, v]) => /^\d{4}-\d{2}$/.test(m) && +v > 0).map(([m, v]) => [m, +v])) : {},
     };
   }
   let colaAjustes = Promise.resolve();   // una escritura por vez sobre el documento de ajustes
@@ -3294,6 +3414,7 @@ const Cerca = (() => {
     const doc = { frecuencia: nuevo.frecuencia, presupuesto: nuevo.presupuesto };      // lo que nunca se usó no se guarda
     if (nuevo.compartir != null) doc.compartir = nuevo.compartir;
     if (nuevo.alias || antes.alias) doc.alias = nuevo.alias || '';
+    if (Object.keys(nuevo.ahorro || {}).length) doc.ahorro = nuevo.ahorro;
     if (Object.keys(nuevo.comercios).length || Object.keys(antes.comercios).length) doc.comercios = nuevo.comercios;
     const r = colaAjustes.then(() => escribir(() => E.db.doc('ajustes/hogar').set(doc)));
     colaAjustes = r.catch(() => {});
@@ -3325,6 +3446,11 @@ const Cerca = (() => {
     return '';
   }
   const nombreDeRef = ref => (ref && E.ajustes.comercios[ref] ? E.ajustes.comercios[ref].n : '');
+  // Lo que el hogar sabe de un comercio para compartir un precio: dónde queda y su nombre de verdad (o null).
+  function lugarDe(ref) {
+    const c = ref && E.ajustes.comercios[ref];
+    return c && A.puntoValido(c.la, c.lo) && c.p ? { lat: c.la, lon: c.lo, nombre: c.p } : null;
+  }
   // Dónde queda un comercio del hogar: lo anotado en el hogar o, si no, lo que sepa el mapa.
   function ubicacionDe(ref) {
     const c = ref && E.ajustes.comercios[ref];
@@ -3522,6 +3648,7 @@ const Cerca = (() => {
     } catch (e) { porId = antes; nota = (e && e.texto) || 'No se pudieron traer los precios de tu zona. Revisá la conexión.'; }
     E.cerca = { estado: nota ? 'error' : 'listo', pos, porId, firma, t: Date.now(), nota };
     pintar();
+    if (Date.now() - (E.promos.t || 0) > 3600e3 || E.promos.estado === 'error') actualizarPromos(pos);
   }
   /* Después de anotar precios: si el hogar comparte, van a la zona; y se mira si otros lo consiguieron más barato.
      items: [{ id, precio, cant }]. Devuelve qué hay para contar o null:
@@ -3533,9 +3660,9 @@ const Cerca = (() => {
     const ref = refDeComercio(comercio), con = [];
     for (const it of items) { const p = E.prod.get(it.id), codigo = codigoDe(p); if (p && !p.ejemplo && codigo && it.precio > 0) con.push({ id: it.id, nombre: p.nombre, codigo, precio: N.redondear2(it.precio), cant: it.cant || 1, reco: recoDe(p) }); }
     if (!con.length) return null;
-    const out = { baratos: [], compartidos: 0, preguntar: false, ref, porId: new Map() };
+    const out = { baratos: [], compartidos: 0, preguntar: false, ref, porId: new Map(), ahorro: 0 };
     if (ref && E.ajustes.compartir === true) {
-      try { out.compartidos = await C.aportar(con, ref, dia, E.ajustes.alias); } catch (e) { out.compartidos = 0; }
+      try { out.compartidos = await C.aportar(con, ref, dia, E.ajustes.alias, lugarDe(ref)); } catch (e) { out.compartidos = 0; }
       if (out.compartidos) E.cerca.t = 0;                              // lo de la zona cambió: se vuelve a pedir cuando haga falta
     } else if (ref && E.ajustes.compartir == null) { out.preguntar = true; E.porCompartir = { items: con, ref, dia }; }
     // se mira cerca de donde se compró; si ese comercio no está ubicado, cerca del teléfono
@@ -3551,6 +3678,7 @@ const Cerca = (() => {
           if (!p || !todos.length) continue;
           // la distancia que se muestra es desde el teléfono; si no se sabe dónde está, va desde donde se compró, y se lo dice
           const l = deLaZona(p, todos).map(o => Object.assign(o, { dist: aca ? A.distancia(aca.lat, aca.lon, o.lat, o.lon) : null }));
+          out.ahorro += ahorroDe(p, x, l, ref, dia);
           const b = A.masBaratos(l.filter(o => o.k !== ref), x.precio);
           if (!b.length) continue;
           out.porId.set(x.id, l);
@@ -3559,9 +3687,27 @@ const Cerca = (() => {
         }
       } catch (e) { /* sin precios de la zona esta vez */ }
     }
-    return out.baratos.length || out.preguntar || out.compartidos ? out : null;
+    if (out.ahorro > 0) sumarAhorro(out.ahorro, fechaISO && N.fechaValida(fechaISO) ? fechaISO : N.hoyISO());
+    return out.baratos.length || out.preguntar || out.compartidos || out.ahorro ? out : null;
   }
-  const detalleOferta = (o, hoy) => [o.comercio ? `en ${o.comercio}` : '', o.dist != null ? `a ${A.distTexto(o.dist)}${o.deCompra ? ' de donde compraste' : ''}` : '', A.haceDias(hoy - o.dia), A.origen(o), A.recoTexto([o])].filter(Boolean).join(' · ');
+  /* Lo que se ahorró gracias a la comunidad en un producto: se compró en un comercio donde otro hogar ya había visto
+     ese precio (o uno más bajo) y es menos de lo que este hogar pagaba antes. x: { precio, cant } · l: los de la zona. */
+  function ahorroDe(p, x, l, ref, dia) {
+    if (!ref) return 0;
+    const antes = N.precios(p).filter(e => e[0] < dia), previo = antes.length ? antes[antes.length - 1][1] : 0;
+    if (!(previo > x.precio)) return 0;
+    const sabido = l.some(o => !o.propio && !o.oficial && o.k === ref && o.dia <= dia && o.precio <= x.precio * 1.03);
+    return sabido ? N.redondear2((previo - x.precio) * (x.cant || 1)) : 0;
+  }
+  function sumarAhorro(monto, iso) {
+    const mes = iso.slice(0, 7), ah = Object.assign({}, E.ajustes.ahorro);
+    ah[mes] = N.redondear2((ah[mes] || 0) + monto);
+    for (const m of Object.keys(ah).sort().slice(0, -12)) delete ah[m];       // se guardan los últimos 12 meses
+    cambiarAjustes({ ahorro: ah }).catch(() => {});
+  }
+  const ahorroDelMes = () => +(E.ajustes.ahorro || {})[N.hoyISO().slice(0, 7)] || 0;
+  const detalleOferta = (o, hoy) => [o.comercio ? `en ${o.comercio}` : '', o.dist != null ? `a ${A.distTexto(o.dist)}${o.deCompra ? ' de donde compraste' : ''}` : '', A.haceDias(hoy - o.dia), A.origen(o), A.recoTexto([o]),
+    o.promo ? `con promo: ${N.plata(o.promo.precio)}${o.promo.texto ? ` (${o.promo.texto})` : ''}` : ''].filter(Boolean).join(' · ');
   // La tostada después de anotar un precio: quién lo consiguió más barato y dónde.
   const avisoBarato = o => `${o.hogar && !o.propio ? `${o.hogar} lo consiguió` : 'Otros hogares lo consiguieron'} más barato: ${textoOferta(o)}`;
   const textoOferta = o => A.textoCerca(o.deCompra ? Object.assign({}, o, { dist: null }) : o);
@@ -3581,6 +3727,7 @@ const Cerca = (() => {
         <div class="acciones"><button type="button" class="btn btn-chico" data-act="mapa-compra">${ico('mapa')}Ver dónde</button></div></div>` : ''}
       ${r.preguntar && E.ajustes.compartir == null ? h`<div class="nota compartir"><p><strong>¿Compartir estos precios con otros hogares de tu zona?</strong> Va el producto, el precio, la fecha y el comercio, y el nombre público de tu hogar si elegiste uno en Ajustes. Nunca tu nombre, tu email ni tu dirección. Se puede cambiar después en Ajustes.</p>
         <div class="acciones"><button type="button" class="btn btn-chico" data-act="compartir-no">No</button><button type="button" class="btn btn-chico btn-principal" data-act="compartir-si">Sí, compartir</button></div></div>` : ''}
+      ${r.ahorro > 0 ? h`<p class="nota verde" id="ahorro-compra"><strong>Con esta compra ahorraste ${N.plata(r.ahorro)} gracias a otros hogares.</strong></p>` : ''}
       ${r.compartidos ? h`<p class="tenue chico" id="compartidos">${r.compartidos === 1 ? 'Ese precio ya lo ven' : `Esos ${r.compartidos} precios ya los ven`} los hogares de tu zona${E.ajustes.alias ? `, como «${E.ajustes.alias}»` : ', sin tu nombre'}.</p>` : ''}`;
   }
   // Lo de la zona que le sirve a este hogar: [{ id, p, o (el más barato), cuantos }], lo que más ahorra primero.
@@ -3622,11 +3769,64 @@ const Cerca = (() => {
       ${compartir}</div>`;
   }
 
+  // Lo que el hogar ahorró este mes gracias a la comunidad.
+  function bloqueAhorro() {
+    const m = ahorroDelMes();
+    if (!(m > 0)) return '';
+    return h`<div class="bloque ahorro"><h2 class="bloque-t">Ahorro con la comunidad</h2>
+      <p class="canasta-pct verde">${N.plata(m)}</p>
+      <p class="mes-nota">ahorraste este mes comprando donde otros hogares encontraron mejor precio</p></div>`;
+  }
+  /* ---------- promos de la zona ---------- */
+  const PROMO_MEDIOS = ['Todos los medios', 'Efectivo', 'MODO', 'Mercado Pago', 'Cuenta DNI', 'Banco Nación', 'Banco Provincia', 'Galicia', 'Santander', 'BBVA', 'Macro', 'Naranja X', 'Ualá', 'Jubilados'];
+  const DIAS_CORTOS = ['D', 'L', 'M', 'M', 'J', 'V', 'S'];
+  function diasTexto(d) {
+    if (!d || !d.length || d.length === 7) return 'todos los días';
+    const l = d.slice().sort((a, b) => ((a + 6) % 7) - ((b + 6) % 7)).map(x => DIAS_SEMANA[x]);
+    return l.length === 1 ? `los ${l[0]}` : `${l.slice(0, -1).join(', ')} y ${l[l.length - 1]}`;
+  }
+  const promoDeHoy = (x, dow) => !x.dias.length || x.dias.includes(dow);
+  function promosVigentes() {
+    const hoy = hoyDia();
+    return (E.promos.lista || []).filter(x => x.hasta >= hoy);
+  }
+  const filaPromo = x => h`<li><span class="oferta-nombre">${x.n}</span><strong class="oferta-precio">${x.pct ? `${x.pct} %` : ''}</strong>
+    <span class="oferta-detalle">${[x.t, x.m && x.m !== 'Todos los medios' && !N.norm(x.t).includes(N.norm(x.m)) ? `con ${x.m}` : '', diasTexto(x.dias), `hasta el ${N.fechaCorta(N.isoDeDia(x.hasta))}`, x.dist != null ? `a ${A.distTexto(x.dist)}` : '', x.h ? `la cargó ${x.h}` : ''].filter(Boolean).join(' · ')}</span></li>`;
+  function bloquePromos() {
+    if (!puedeCerca() || !Datos.promos || E.cerca.estado === 'sin') return '';
+    const P = E.promos, dow = new Date().getDay(), vig = promosVigentes(), hoyL = vig.filter(x => promoDeHoy(x, dow)), otras = vig.filter(x => !promoDeHoy(x, dow));
+    return h`<div class="bloque promos"><h2 class="bloque-t">Promos de tu zona</h2>
+      ${P.estado === 'buscando' && !vig.length ? cargando('Buscando promos…') : ''}
+      ${P.nota ? h`<p class="nota gris">${P.nota}</p>` : ''}
+      ${hoyL.length ? h`<p><strong>Hoy, ${DIAS_SEMANA[dow]}:</strong></p><ul class="ofertas">${hoyL.map(filaPromo)}</ul>` : P.estado === 'buscando' ? '' : h`<p class="tenue">Hoy no hay promos cargadas cerca.</p>`}
+      ${otras.length ? h`<p><strong>Otros días:</strong></p><ul class="ofertas">${otras.slice(0, 10).map(filaPromo)}</ul>` : ''}
+      <p class="tenue chico">Las cargan los hogares: descuentos por día, banco o billetera. Pueden haber cambiado, conviene confirmarlas en el comercio.</p>
+      <div class="acciones"><button type="button" class="btn btn-chico" data-act="promo-nueva" data-escribe>Cargar una promo</button></div></div>`;
+  }
+  async function actualizarPromos(pos) {
+    if (!Datos.promos || !pos) return;
+    E.promos = Object.assign({}, E.promos, { estado: 'buscando', nota: '' });
+    try {
+      const l = await C.promos(pos);
+      E.promos = { estado: 'listo', lista: l, t: Date.now(), nota: '' };
+    } catch (e) { E.promos = { estado: 'error', lista: E.promos.lista || [], t: Date.now(), nota: (e && e.texto) || 'No se pudieron traer las promos de tu zona.' }; }
+    pintar();
+  }
+  // Arriba de la lista de compras: si hoy hay promos cerca.
+  function avisoPromosHoy() {
+    if (!puedeCerca() || !Datos.promos) return '';
+    const dow = new Date().getDay(), l = promosVigentes().filter(x => promoDeHoy(x, dow));
+    if (!l.length) return '';
+    const x = l[0];
+    return h`<a class="nota promo-hoy" href="#novedades" data-tab="novedades"><strong>Hoy conviene:</strong> ${x.n} · ${x.t}${l.length > 1 ? ` · y ${l.length - 1} ${N.plural(l.length - 1, 'promo más', 'promos más')}` : ''}</a>`;
+  }
+
   /* ---------- novedades ---------- */
   // Lo que hay para contar, con una clave por novedad para saber cuáles ya se vieron en este teléfono.
   function novedades() {
     const hoy = hoyDia(), cambios = A.cambios(V.prods, hoy, 45), ofertas = puedeCerca() ? ofertasCerca() : [];
-    const claves = cambios.map(c => `p:${c.id}:${hoy - c.hace}`).concat(ofertas.map(x => `c:${x.id}:${x.o.k}:${x.o.dia}`));
+    const dow = new Date().getDay(), promos = puedeCerca() ? promosVigentes().filter(x => promoDeHoy(x, dow)) : [];
+    const claves = cambios.map(c => `p:${c.id}:${hoy - c.hace}`).concat(ofertas.map(x => `c:${x.id}:${x.o.k}:${x.o.dia}`), promos.map(x => `r:${x.id}:${hoy}`));
     return { cambios, ofertas, claves };
   }
   function pintarGloboNovedades() {
@@ -3643,7 +3843,7 @@ const Cerca = (() => {
     for (const x of V.compras) { const c = ((V.plan && V.plan.porId.get(x.id)) || []).find(k => k.ahorro > 0); if (c) consejos.push({ x, c }); }
     consejos.sort((a, b) => b.c.ahorro - a.c.ahorro);
     $('#no-resumen').textContent = nov.cambios.length ? `${nov.cambios.length} ${N.plural(nov.cambios.length, 'producto cambió', 'productos cambiaron')} de precio en los últimos 45 días` : '';
-    const partes = [bloqueCanasta(inf), bloqueCercaNovedades()];
+    const partes = [bloqueAhorro(), bloqueCanasta(inf), bloquePromos(), bloqueCercaNovedades()];
     if (consejos.length) {
       partes.push(h`<div class="bloque"><h2 class="bloque-t">Para la próxima compra</h2>
         <ul class="consejos">${consejos.slice(0, 8).map(k => h`<li><strong>${k.x.p.nombre}</strong><span class="compra-consejo ${k.c.tipo}">${k.c.texto}</span></li>`)}</ul>
@@ -3693,7 +3893,7 @@ const Cerca = (() => {
     const activo = document.activeElement, enFila = activo && activo.closest ? activo.closest('#al-lista [data-id]') : null;
     const foco = enFila && activo.dataset.act ? { id: enFila.dataset.id, act: activo.dataset.act } : null;
     const grupos = [];
-    if (!filas.some(f => (f.p.log || []).some(e => e[1] > 0))) grupos.push(h`<p class="tenue chico" data-escribe>Tocá <strong>−</strong> cada vez que se termine uno. Con eso la libreta aprende cuánto se consume y avisa antes de que falte.</p>`);
+    if (!filas.some(f => (f.p.log || []).some(e => e[1] > 0))) grupos.push(h`<p class="tenue chico" data-escribe>La libreta aprende de cada cuánto comprás cada cosa. Si querés que avise con más precisión, tocá <strong>−</strong> cuando se termina uno: es optativo.</p>`);
     for (const c of N.CATS_ALACENA) {
       const g = vis.filter(f => catDe(f.p) === c).sort((x, y) => String(x.p.nombre).localeCompare(String(y.p.nombre), 'es'));
       if (!g.length) continue;
@@ -3764,6 +3964,8 @@ const Cerca = (() => {
   }
   function renderCompras() {
     const frec = E.ajustes.frecuencia, compras = V.compras, pl = V.plan;
+    const voy = $('#co-voy');
+    if (voy) voy.hidden = !Datos.notas || !E.db;
     for (const b of $$('#co-frec button')) b.setAttribute('aria-pressed', String(+b.dataset.frec === frec));
     const enLista = new Set(compras.map(x => x.id));
     for (const id of [...E.marcados]) if (!enLista.has(id) && E.prodListo) E.marcados.delete(id);
@@ -3795,7 +3997,7 @@ const Cerca = (() => {
       : h`<section class="grupo"><h2 class="grupo-t"><span>Del día a día</span><span>${diarias.length}</span></h2>${diarias.map(fila)}</section>
         ${grandes.length ? h`<section class="grupo"><h2 class="grupo-t"><span>Para ${FREC_HASTA[frec]}</span><span>${grandes.length}</span></h2>${grandes.map(fila)}</section>` : ''}`;
     const total = pl ? pl.total : 0, sinPrecio = pl ? pl.sinPrecio : 0;
-    caja.innerHTML = val(h`<p class="tenue chico">Tildá lo que vayas poniendo en el changuito.</p>
+    caja.innerHTML = val(h`${avisoPromosHoy()}<p class="tenue chico">Tildá lo que vayas poniendo en el changuito.</p>
       ${filas}
       ${bloquePlan()}
       <div class="pie-compras">
@@ -4039,7 +4241,8 @@ const Cerca = (() => {
         const a = N.analizar(p, hoyDia(), E.ajustes.frecuencia), l = [];
         if (a.modo === 'uso') l.push(h`<span>Se usa <strong>${N.ritmoTexto(a.ritmo)}</strong> (según lo anotado en los últimos ${N.VENTANA} días).</span>`);
         else if (a.modo === 'compra') l.push(h`<span>Sin consumo anotado: se estima por las compras, <strong>cada ~${Math.max(1, Math.round(a.cadaDias))} días</strong>.</span>`);
-        else l.push(h`<span>Todavía no hay consumo anotado. Tocá − en la alacena cada vez que se termine uno.</span>`);
+        else l.push(h`<span>Todavía no hay datos de consumo. Se aprende solo de cada cuánto lo comprás; si querés, tocá − en la alacena cuando se termina uno.</span>`);
+        l.push(h`<span class="acciones"><button type="button" class="btn btn-chico${a.pedido ? '' : ' btn-principal'}" data-act="pedir" data-id="${H.id}" data-escribe>${a.pedido ? 'Sacar de la lista' : 'Anotar en la lista'}</button></span>`);
         dato = h`<div class="dato">${l}</div>${bloquePrecios(H.id, p)}`;
       }
       const par = H.parecido ? verProd(H.parecido) : null;
@@ -4079,7 +4282,8 @@ const Cerca = (() => {
     },
 
     escanear(H) {
-      const titulo = H.codigoPara ? 'Código de barras' : 'Escanear producto';
+      const titulo = H.codigoPara ? 'Código de barras' : H.modo === 'precio' ? 'Escanear un precio' : 'Escanear producto';
+      if (H.estado === 'gondola') return vistaGondola(H);
       if (H.estado === 'camara') {
         return marco(titulo, h`<div class="hoja-cuerpo">
           <div class="visor"><video id="visor-video" playsinline muted autoplay aria-label="Lo que ve la cámara"></video><div class="visor-guia" aria-hidden="true"></div></div>
@@ -4123,6 +4327,7 @@ const Cerca = (() => {
         ${H.nota ? h`<p class="error" role="alert">${H.nota}</p>` : ''}
         ${Lector.etiquetas() ? h`<p><strong>Producto nuevo:</strong> foto del frente del envase, para leer el nombre, la marca y el tamaño.</p>
           <p><strong>Uno que ya cargaste:</strong> alcanza con la foto del código de barras, o del frente otra vez.</p>`
+          : H.modo === 'precio' ? h`<p>${viva ? 'Apuntá la cámara al' : 'Sacale una foto al'} <strong>código de barras</strong> del producto que tenés en la mano: te digo cuánto lo pagaste la última vez y si cerca está más barato.</p>`
           : h`<p>${viva ? 'Apuntá la cámara al' : 'Sacale una foto al'} <strong>código de barras</strong> del producto. Si ya está en la alacena, se le suman unidades; si es nuevo, ${
             Lector.porCodigo ? 'se busca su nombre por el código para que lo confirmes' : 'completás sus datos una sola vez'}.</p>`}
         <div class="elegir">
@@ -4318,6 +4523,24 @@ const Cerca = (() => {
           ${H.error ? h`<p class="error" role="alert">${H.error}</p>` : ''}
           <div class="hoja-pie"><button type="submit" class="btn btn-principal"${atr('disabled', H.ocupado)}>Dejar la nota</button></div>
         </form></div>`);
+    },
+
+    // Cargar una promo de la zona: en qué comercio, qué descuento, qué días y con qué medio de pago.
+    promo(H) {
+      return marco('Cargar una promo', h`<form class="form" data-form="promo" novalidate>
+        <p class="tenue chico">La ven los hogares de tu zona${E.ajustes.alias ? `, como «${E.ajustes.alias}»` : ', sin tu nombre'}. Cargá solo promos que viste en el comercio o en tu banco.</p>
+        ${campoComercio('pr-comercio', 'comercio', H.comercio || '', 'En qué comercio')}
+        ${campo('Qué promo es', h`<input type="text" id="pr-texto" data-k="texto" value="${H.texto}" maxlength="120" autocomplete="off" placeholder="25 % en todo, tope $ 10.000 por semana">`)}
+        <div class="dos">
+          ${campo('Descuento (%)', h`<input type="text" id="pr-pct" data-k="pct" value="${H.pct}" inputmode="numeric" autocomplete="off" placeholder="Opcional">`)}
+          ${campo('Con qué se paga', h`<select id="pr-medio" data-k="medio">${opciones(PROMO_MEDIOS.map(m => [m, m]), H.medio)}</select>`)}
+        </div>
+        <div class="campo"><span id="pr-dias-r">Qué días <small class="tenue">· sin tildar ninguno: todos los días</small></span>
+          <div class="chips" role="group" aria-labelledby="pr-dias-r">${[1, 2, 3, 4, 5, 6, 0].map(d => h`<button type="button" class="chip${H.dias.includes(d) ? ' puesto' : ''}" data-act="promo-dia" data-d="${d}" aria-pressed="${H.dias.includes(d) ? 'true' : 'false'}" aria-label="${DIAS_SEMANA[d]}">${DIAS_CORTOS[d]}</button>`)}</div></div>
+        ${campo('Vale hasta', h`<input type="date" id="pr-hasta" data-k="hasta" value="${H.hasta}" min="${N.hoyISO()}" max="${N.isoDeDia(hoyDia() + 62)}">`)}
+        ${H.error ? h`<p class="error" role="alert">${H.error}</p>` : ''}
+        <div class="hoja-pie"><button type="button" class="btn" data-act="cerrar">Cancelar</button>
+          <button type="submit" class="btn btn-principal"${atr('disabled', H.ocupado)}>${H.ocupado ? 'Guardando…' : 'Cargar la promo'}</button></div></form>`);
     },
 
     // El mapa con los precios de la zona. Se dibuja una sola vez; después cambia solo la ficha de abajo.
@@ -4544,6 +4767,7 @@ const Cerca = (() => {
     clearTimeout(H.sub.reloj);
     soltarMapa(H.sub);
     H.sub = null;
+    if (H.error) H.error = '';      // lo que faltaba era el comercio: ya se eligió
     renderHoja();
     const el = campoId && document.getElementById(campoId);
     if (el) { el.scrollIntoView({ block: 'nearest' }); el.dispatchEvent(new Event('input', { bubbles: true })); }
@@ -4686,7 +4910,7 @@ const Cerca = (() => {
     let id = l.id;
     try {
       if (l.nuevo) id = await C.marcar(n, l.lat, l.lon, S.rubro);
-      await cambiarAjustes({ comercios: Object.assign({}, E.ajustes.comercios, { [id]: { n, la: l.lat, lo: l.lon } }) });
+      await cambiarAjustes({ comercios: Object.assign({}, E.ajustes.comercios, { [id]: { n, la: l.lat, lo: l.lon, p: (l.nuevo ? n : l.nombre || n).slice(0, 60) } }) });
     } catch (e) { if (E.hoja === H && H.sub === S) decir((e && e.texto) || textoFallo(e)); return; }
     if (!l.nuevo) C.recordar(id, l.lat, l.lon, l.nombre, l.direccion, l.rubro);
     pintarComercios();
@@ -4801,7 +5025,7 @@ const Cerca = (() => {
   async function fotoProducto(archivo, detalle) {
     if (!puede() || !Imagen.esImagen(archivo)) return;
     const url = URL.createObjectURL(archivo);
-    abrirHoja({ tipo: 'escanear', estado: 'leyendo', paso: 'codigo', mini: url, urls: [url], ctl: new AbortController(), archivo });
+    abrirHoja({ tipo: 'escanear', estado: 'leyendo', paso: 'codigo', mini: url, urls: [url], ctl: new AbortController(), archivo, modo: E.modoEscaneo });
     const H = E.hoja, turno = E.turno, vivo = () => E.turno === turno && E.hoja === H;
     let im;
     try { im = await Imagen.abrir(archivo); }
@@ -4817,6 +5041,7 @@ const Cerca = (() => {
      suman unidades. Si no, se averiguan los datos —por el código, o leyendo la etiqueta de la foto— y se abre
      la ficha para confirmarlos. `im` es la foto abierta, o null si el código salió de la cámara en vivo. */
   async function trasLeer(H, vivo, codigo, im, detalle) {
+    if (H.modo === 'precio') { await gondola(H, vivo, codigo); return; }
     if (codigo) { const id = porCodigo(codigo); if (id) { conocido(id); return; } }
     let leido = null, nota = '', sinRed = false;
     if (codigo && Lector.porCodigo) {
@@ -4856,6 +5081,125 @@ const Cerca = (() => {
       puedeDetalle: !!leido && !ok && !detalle && !!H.archivo && Lector.etiquetas(), sucio: true, error: '',
     });
   }
+  /* ---------- en la góndola ----------
+     Con el producto en la mano: cuánto se pagó la última vez, lo más barato cerca (de otros hogares y de los precios
+     oficiales) y, al escribir el precio que se ve, si conviene. Se anota solo el precio o, si se lo lleva, también suma. */
+  async function gondola(H, vivo, codigo) {
+    if (!codigo) { cambiarHoja({ estado: 'espera', nota: 'No se encontró un código de barras. Tiene que verse entero, de cerca y sin reflejos.' }); return; }
+    const id = porCodigo(codigo), canon = Barras.canonico(codigo), p = id ? verProd(id) : null;
+    pintarComercios();
+    cambiarHoja({ estado: 'gondola', id, codigo: canon, codigoLeido: String(codigo).replace(/\D/g, ''), nombre: p ? N.textoProducto(p) : '', info: null, precio: '', comercio: ultimoComercio(), error: '', zona: null, estadoZona: puedeCerca() ? 'buscando' : 'sin', ocupado: false });
+    if (!id && Lector.porCodigo) {
+      try {
+        const r = await Lector.porCodigo(codigo, { signal: H.ctl.signal });
+        if (!vivo()) return;
+        if (r) { H.info = r; H.nombre = [r.nombre, r.marca, r.presentacion].filter(Boolean).join(' · '); renderHoja(); }
+      } catch (e) { /* sin nombre: se ve el código */ }
+    }
+    if (!puedeCerca()) return;
+    let pos = C.ultimaPosicion();
+    if (!pos) { try { pos = await C.posicion(true); } catch (e) { pos = null; } }      // se tocó «escanear un precio»: se puede preguntar
+    let zona = null;
+    if (pos) { try { zona = (await C.buscar(pos, [canon])).get(canon) || []; } catch (e) { zona = null; } }
+    if (!vivo() || E.hoja !== H || H.estado !== 'gondola') return;
+    H.zona = zona ? zona.map(o => Object.assign({}, o, { dist: A.distancia(pos.lat, pos.lon, o.lat, o.lon) })) : null;
+    H.estadoZona = pos ? 'listo' : 'sin-ubicacion';
+    renderHoja();
+  }
+  function datosGondola(H) {
+    const p = H.id ? verProd(H.id) : null, hist = p ? N.precios(p) : [], ult = hist.length ? hist[hist.length - 1] : null;
+    const zona = H.zona ? (p ? deLaZona(p, H.zona) : H.zona.map(o => Object.assign({}, o, { comercio: nombreDeRef(o.k) || o.comercio || '' }))).filter(o => !o.propio) : null;
+    const precios = zona ? zona.filter(o => !ult || o.precio >= ult[1] * 0.4) : null;       // uno tan barato casi siempre está mal cargado
+    return { p, ult, mejor: precios && precios.length ? precios.slice().sort((a, b) => a.precio - b.precio)[0] : null, hayZona: !!zona };
+  }
+  function veredictoGondola(H) {
+    const v = N.aNumero(limpio(H.precio)), d = datosGondola(H);
+    if (!(v > 0)) return { tono: '', texto: d.ult || d.mejor ? 'Escribí el precio que ves y te digo si conviene.' : 'Escribí el precio que ves: así la próxima vez sabés si subió.' };
+    if (d.mejor && v > d.mejor.precio * 1.03) {
+      return { tono: 'rojo', texto: `Está ${A.pct(v / d.mejor.precio - 1)} más caro que ${d.mejor.comercio ? `en ${d.mejor.comercio}` : 'cerca'} (${N.plata(d.mejor.precio)}${d.mejor.dist != null ? `, a ${A.distTexto(d.mejor.dist)}` : ''}).` };
+    }
+    if (d.ult && v > d.ult[1] * 1.03) return { tono: 'ambar', texto: `Subió ${A.pct(v / d.ult[1] - 1)} desde la última vez (${N.plata(d.ult[1])}).${d.mejor ? ' Igual, cerca no se vio más barato.' : ''}` };
+    if (d.mejor) return { tono: 'verde', texto: 'Buen precio: es lo más barato que se vio cerca.' };
+    if (d.ult) return { tono: 'verde', texto: v < d.ult[1] * 0.97 ? `Bajó ${A.pct(1 - v / d.ult[1])} desde la última vez. Buen precio.` : 'Igual que la última vez.' };
+    return { tono: '', texto: 'Anotalo: así la próxima vez sabés si subió.' };
+  }
+  function vistaGondola(H) {
+    const d = datosGondola(H), hoy = hoyDia(), ver = veredictoGondola(H);
+    return marco('Escanear un precio', h`<form class="form" data-form="gondola" novalidate>
+      <div class="conocido"><div><p class="rotulo">${d.p ? 'Está en tu alacena' : 'En la góndola'}</p><p class="conocido-nombre">${H.nombre || 'Producto nuevo'}</p>
+        <p class="tenue chico">${d.p ? `hay ${d.p.stock || 0} en casa` : `código ${H.codigo}`}</p></div></div>
+      <ul class="gondola-datos">
+        ${d.ult ? h`<li><span>La última vez lo pagaste</span><strong>${N.plata(d.ult[1])}</strong><small>${[A.haceDias(hoy - d.ult[0]), d.ult[2] ? `en ${d.ult[2]}` : ''].filter(Boolean).join(' · ')}</small></li>` : ''}
+        ${H.estadoZona === 'buscando' ? h`<li>${cargando('Mirando precios cerca…')}</li>`
+          : d.mejor ? h`<li><span>Lo más barato cerca</span><strong class="verde">${N.plata(d.mejor.precio)}</strong><small>${detalleOferta(d.mejor, hoy)}</small></li>`
+            : H.estadoZona === 'sin-ubicacion' ? h`<li><span class="tenue">Para comparar con tu zona, activá tu ubicación en Novedades.</span></li>`
+              : d.hayZona ? h`<li><span class="tenue">Todavía nadie cargó este producto cerca. ¡Sé el primero!</span></li>` : ''}
+      </ul>
+      ${campo('Precio acá', h`<input type="text" id="g-precio" data-k="precio" value="${H.precio}" inputmode="decimal" autocomplete="off" placeholder="$">`)}
+      <p class="gondola-veredicto ${ver.tono}" id="g-veredicto" aria-live="polite">${ver.texto}</p>
+      ${campoComercio('g-comercio', 'comercio', H.comercio || '', 'Dónde estás')}
+      ${H.error ? h`<p class="error" role="alert">${H.error}</p>` : ''}
+      <div class="hoja-pie"><button type="submit" class="btn"${atr('disabled', H.ocupado)}>Solo anotar el precio</button>
+        <button type="button" class="btn btn-principal" data-act="gondola-llevo"${atr('disabled', H.ocupado)}>Lo llevo</button></div></form>`);
+  }
+  async function guardarGondola(llevo) {
+    const H = E.hoja;
+    if (!H || H.estado !== 'gondola' || H.ocupado || !puede()) return;
+    const txt = limpio(H.precio), precio = txt ? N.aNumero(txt) : 0, comercio = limpio(H.comercio).slice(0, 60);
+    if (!(precio > 0)) return errorHoja(txt ? 'El precio no se entiende. Escribilo así: 1.450,50' : 'Escribí el precio que ves en la góndola.', 'g-precio');
+    if (!H.id && llevo) {      // uno que no está en la alacena: se completan sus datos una vez
+      const f = formProducto(Object.assign({}, H.info || {}, { codigo: H.codigoLeido || H.codigo, precio, stock: 1 }), true);
+      f.comercio = comercio;
+      cambiarHoja({ tipo: 'producto', id: null, f, deEscaneo: true, sucio: true, error: '', aviso: H.info ? 'Revisá los datos: salen de buscar el código de barras en una base pública.' : 'Completá el nombre una vez y la próxima se reconoce solo.' });
+      return;
+    }
+    ocupar(true);
+    if (H.id) {
+      const cambio = notaPrecio(H.id, txt);
+      const ok = await mover(H.id, { c: llevo ? 1 : 0 }, precioDe(precio, comercio), true);
+      if (E.hoja !== H) return;
+      if (!ok) { ocupar(false); return; }
+      recordarComercio(comercio);
+      const p = verProd(H.id) || {};
+      cambiarHoja({ estado: 'hecho', texto: llevo ? `${p.nombre}: se sumó 1 a la alacena. Ahora hay ${p.stock}.${cambio ? ` ${cambio}.` : ''}` : `Precio anotado: ${N.plata(precio)}${comercio ? ` en ${comercio}` : ''}.${cambio ? ` ${cambio}.` : ''}`, ocupado: false, error: '', fallo: false, sinCodigo: false, cerca: null });
+      trasCompra([{ id: H.id, precio, cant: 1 }], comercio).then(r => { if (r && E.hoja === H && H.estado === 'hecho') { H.cerca = r; renderHoja(); } });
+      return;
+    }
+    // el precio de algo que no está en la alacena: sirve para la zona, si el hogar comparte y el comercio está ubicado
+    const ref = refDeComercio(comercio);
+    let n = 0;
+    if (ref && E.ajustes.compartir === true && puedeCerca()) { try { n = await C.aportar([{ codigo: H.codigo, precio, reco: 0 }], ref, hoyDia(), E.ajustes.alias, lugarDe(ref)); } catch (e) { n = 0; } }
+    if (E.hoja !== H) return;
+    if (comercio) recordarComercio(comercio);
+    cambiarHoja({ estado: 'hecho', ocupado: false, error: '', fallo: false, sinCodigo: false, cerca: null,
+      texto: n ? `Precio anotado: ${N.plata(precio)} en ${comercio}. Ya lo ven los hogares de tu zona. ¡Gracias!`
+        : !ref ? 'Para que ese precio les sirva a otros hogares, ubicá el comercio en el mapa (el botón del pin).'
+          : E.ajustes.compartir !== true ? 'Tu hogar no comparte precios con la zona: se cambia en Ajustes. Como el producto no está en tu alacena, el precio no se guardó.'
+            : 'No se pudo anotar el precio. Probá de nuevo.' });
+  }
+
+  async function guardarPromo() {
+    const H = E.hoja;
+    if (!H || H.tipo !== 'promo' || H.ocupado || !puede()) return;
+    const comercio = limpio(H.comercio), ref = refDeComercio(comercio), texto = limpio(H.texto).slice(0, 120), hoy = hoyDia();
+    const pct = limpio(H.pct) ? Math.round(N.aNumero(limpio(H.pct).replace('%', ''))) : 0, hasta = N.fechaValida(H.hasta) ? N.diaDe(H.hasta) : 0;
+    if (!ref) return errorHoja(comercio ? 'Ubicá ese comercio en el mapa (el botón del pin): así la promo les aparece a los hogares de la zona.' : 'Elegí el comercio de la promo.', 'pr-comercio');
+    if (texto.length < 3) return errorHoja('Contá en pocas palabras qué promo es.', 'pr-texto');
+    if (!(pct >= 0 && pct <= 80)) return errorHoja('El descuento va de 0 a 80 %.', 'pr-pct');
+    if (!(hasta >= hoy && hasta <= hoy + 62)) return errorHoja('La fecha tiene que ser de hoy en adelante, hasta dos meses.', 'pr-hasta');
+    ocupar(true);
+    try {
+      let lugar = lugarDe(ref);
+      if (!lugar) { const u = await ubicacionDe(ref); const d = C.conocido(ref); lugar = { lat: u.lat, lon: u.lon, nombre: (d && d.nombre) || nombreDeRef(ref) }; }
+      await C.cargarPromo({ k: ref, n: lugar.nombre, t: texto, m: H.medio, pct, dias: H.dias.slice().sort(), hasta, d: hoy, la: lugar.lat, lo: lugar.lon, h: E.ajustes.alias || '' });
+    } catch (e) { if (E.hoja === H) errorHoja((e && e.texto) || textoFallo(e)); return; }
+    if (E.hoja !== H) return;
+    cerrarHoja();
+    avisar('Promo cargada: ya la ven los hogares de tu zona');
+    const pos = C.ultimaPosicion();
+    if (pos) actualizarPromos(pos);
+  }
+
   async function sumarConocido() {
     const H = E.hoja;
     if (!H || H.ocupado || !puede()) return;
@@ -4952,7 +5296,7 @@ const Cerca = (() => {
     if (!puede()) return;
     if (!camaraPosible()) { abrirHoja({ tipo: 'escanear', estado: 'espera' }); return; }
     camaraFallo = camaraDudosa = false;
-    abrirHoja({ tipo: 'escanear', estado: 'camara', codigoPara: paraId || null, urls: [], ctl: new AbortController() });
+    abrirHoja({ tipo: 'escanear', estado: 'camara', codigoPara: paraId || null, urls: [], ctl: new AbortController(), modo: paraId ? null : E.modoEscaneo });
     const H = E.hoja, turno = E.turno;
     const vivo = () => E.turno === turno && E.hoja === H, mirando = () => vivo() && H.estado === 'camara';
     const fallo = e => {
@@ -5331,7 +5675,7 @@ const Cerca = (() => {
     // En el celular, escanear abre directamente la cámara: en vivo si se puede, y si no la de sacar fotos.
     escanear() {
       if (!puede()) return;
-      E.codigoPara = null;
+      E.codigoPara = null; E.modoEscaneo = null;
       if (camaraViva() && dedoGrueso()) { abrirCamara(null); return; }
       abrirHoja({ tipo: 'escanear', estado: 'espera' });
       if (dedoGrueso()) elegir('in-prod-cam');
@@ -5382,6 +5726,48 @@ const Cerca = (() => {
       });
     },
     'sumar-marcados'() { abrirCompra(); },
+    // en la góndola
+    gondola() {
+      if (!puede()) return;
+      E.codigoPara = null; E.modoEscaneo = 'precio';
+      if (camaraViva() && dedoGrueso()) { abrirCamara(null); return; }
+      abrirHoja({ tipo: 'escanear', estado: 'espera', modo: 'precio' });
+      if (dedoGrueso()) elegir('in-prod-cam');
+    },
+    'gondola-llevo'() { guardarGondola(true); },
+    // «aviso que voy»: una nota para la familia, para que anoten lo que falte
+    async 'voy-al-super'() {
+      if (!puede() || !Datos.notas) return;
+      const c = ultimoComercio();
+      try { await Datos.notas.agregar(`Voy a hacer las compras${c ? ` (${c})` : ''}. Si falta algo, anotalo en la lista.`, 1); avisar('Listo: tu familia ve el aviso en Notas'); }
+      catch (e) { avisar((e && e.texto) || textoFallo(e)); }
+      pintar();
+    },
+    // anotar un producto en la lista aunque no se haya terminado
+    pedir(el) {
+      const id = el.dataset.id, p = E.prod.get(id);
+      if (!p || !puede()) return;
+      const a = N.analizar(p, hoyDia(), E.ajustes.frecuencia), pedido = a.pedido ? 0 : hoyDia();
+      E.prod.set(id, { ...p, pedido });
+      el.textContent = pedido ? 'Sacar de la lista' : 'Anotar en la lista';
+      el.classList.toggle('btn-principal', !pedido);
+      enCola(id, () => escribir(() => E.db.doc('productos/' + id).update({ pedido }))).then(() => avisar(pedido ? `${p.nombre}: anotado en la lista de compras` : `${p.nombre}: salió de la lista`), falloGuardar);
+      pintar();
+    },
+    // las promos
+    'promo-nueva'() {
+      if (!puede() || !puedeCerca()) return;
+      pintarComercios();
+      const fin = new Date(); fin.setMonth(fin.getMonth() + 1, 0);
+      abrirHoja({ tipo: 'promo', comercio: ultimoComercio(), texto: '', pct: '', medio: PROMO_MEDIOS[0], dias: [], hasta: N.hoyISO(fin), error: '', ocupado: false });
+    },
+    'promo-dia'(el) {
+      const H = E.hoja, d = +el.dataset.d;
+      if (!H || H.tipo !== 'promo') return;
+      H.dias = H.dias.includes(d) ? H.dias.filter(x => x !== d) : H.dias.concat(d);
+      const si = H.dias.includes(d);
+      el.classList.toggle('puesto', si); el.setAttribute('aria-pressed', si ? 'true' : 'false');
+    },
     'copiar-alias'() {
       let p;
       try { p = navigator.clipboard.writeText(APORTES.alias); } catch (e) { p = Promise.reject(e); }
@@ -5649,7 +6035,7 @@ const Cerca = (() => {
       try { await cambiarAjustes({ compartir: true }); } catch (e) { falloGuardar(e); return; }
       E.porCompartir = null;
       let n = 0;
-      if (pend) { try { n = await C.aportar(pend.items, pend.ref, pend.dia, E.ajustes.alias); } catch (e) { n = 0; } }
+      if (pend) { try { n = await C.aportar(pend.items, pend.ref, pend.dia, E.ajustes.alias, lugarDe(pend.ref)); } catch (e) { n = 0; } }
       if (n) E.cerca.t = 0;
       if (H && E.hoja === H && H.cerca) { H.cerca.preguntar = false; H.cerca.compartidos = n; renderHoja(); }
       else avisar(n ? `Listo: ${n === 1 ? 'el precio que anotaste ya lo ve' : `los ${n} precios que anotaste ya los ve`} tu zona` : 'Listo: los precios que anotes se comparten con tu zona');
@@ -5707,7 +6093,7 @@ const Cerca = (() => {
       avisar(suma ? 'Copia sumada al hogar' : 'Copia restaurada');
     },
   };
-  const FORMS = { producto: () => guardarProducto(false), conocido: sumarConocido, ticket: guardarTicket, ajustes: guardarAjustes,
+  const FORMS = { producto: () => guardarProducto(false), conocido: sumarConocido, ticket: guardarTicket, ajustes: guardarAjustes, gondola: () => guardarGondola(false), promo: guardarPromo,
     compra: guardarCompra, nota: guardarNota, 'comercio-nombre': guardarComercioNuevo,
     'puerta-crear': () => entrarPorLaPuerta(true), 'puerta-unirse': () => entrarPorLaPuerta(false) };
 
@@ -5747,6 +6133,7 @@ const Cerca = (() => {
     if (k.startsWith('sub.')) { if (el.id === 'lc-buscar') sugerirComercios(); return; }      // la hoja de encima: buscar un comercio
     E.hoja.sucio = true;
     if (E.hoja.tipo === 'ticket') ticketVivo();
+    if (el.id === 'g-precio' && E.hoja.estado === 'gondola') { const v = veredictoGondola(E.hoja), n = $('#g-veredicto'); if (n) { n.textContent = v.texto; n.className = 'gondola-veredicto ' + v.tono; } }
     if (el.id === 'p-diario' && E.hoja.f) E.hoja.f.diarioTocado = true;
     if (el.id === 'p-categoria' && E.hoja.f && !E.hoja.f.diarioTocado) {
       E.hoja.f.diario = N.diarioPorCategoria(el.value);

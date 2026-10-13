@@ -23,6 +23,12 @@ const firebaseConfig = {
    Para apagarlo (los comercios se anotan a mano y no hay precios de la zona), poné false. */
 const mapasLibres = true;
 
+/* Precios oficiales de los supermercados (SEPA).
+
+   Los prepara todos los días la tarea «Precios oficiales» de GitHub (el archivo .github/workflows/precios-oficiales.yml)
+   y quedan en la rama «datos» del repositorio. Va la dirección de esa carpeta; vacío, no se usan. */
+const preciosOficiales = "https://raw.githubusercontent.com/aleedoob-pixel/Alacena/datos/sepa/";
+
 /* Aportes voluntarios (optativo).
 
    Si ponés un link de pago de Mercado Pago o tu alias, Ajustes invita a apoyar la libreta con un aporte.
