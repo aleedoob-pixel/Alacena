@@ -60,7 +60,7 @@
 
   <h3>Tu hogar</h3>
   <p>Lo que cargan los integrantes: los productos, cuántos hay y cuándo se usaron o se compraron, los precios y en qué comercio, los gastos, las notas que se dejan entre ustedes y los ajustes. Estos datos se guardan en un servidor y <strong>solo los pueden ver y cambiar los integrantes de ese hogar</strong>. Para entrar a un hogar hace falta un código que da alguien que ya está adentro, que vale 15 minutos y sirve una sola vez.</p>
-  <p>De cada comercio que ubicás en el mapa queda el nombre que le pusiste y cuál es (su identificador en OpenStreetMap, o el de la libreta si lo marcó un hogar). Si tu hogar eligió un <strong>nombre público</strong> en Ajustes, también queda guardado.</p>
+  <p>De cada comercio que ubicás en el mapa queda el nombre que le pusiste, cuál es (su identificador en OpenStreetMap, o el de la libreta si lo marcó un hogar) y dónde queda. Si tu hogar eligió un <strong>nombre público</strong> en Ajustes, también queda guardado.</p>
 
   <h3>Lo que queda solo en tu teléfono</h3>
   <ul>
@@ -81,7 +81,7 @@
   <h2 id="ubicacion">Ubicación y cámara</h2>
   <p>La libreta pide tu <strong>ubicación</strong> únicamente cuando tocás «Buscar comercios cerca mío» o «Usar mi ubicación». La usa para dos cosas:</p>
   <ul>
-    <li>pedirle a OpenStreetMap los comercios que hay cerca (se le envía un punto aproximado, el centro de un cuadro de 1 km);</li>
+    <li>pedirle a OpenStreetMap los comercios que hay cerca (se envía un punto aproximado: el centro de un cuadro de unos 500 m);</li>
     <li>pedirle al servidor de la libreta los precios compartidos de tu zona (se le envía en qué cuadros del mapa estás, de unos 10 km de lado, no el punto exacto).</li>
   </ul>
   <p>Tu ubicación no se guarda en tu hogar ni la ve ninguna otra persona. Queda en tu teléfono, y la borrás cuando quieras en Ajustes → «Olvidarla». Sin dar la ubicación la libreta anda igual: los comercios se anotan a mano o se marcan en el mapa.</p>
@@ -91,7 +91,7 @@
   <p>Con nadie, salvo los servicios que hacen falta para que la libreta funcione:</p>
   <table>
     <tr><th>Google Firebase</th><td>Guarda las cuentas (Firebase Authentication) y los datos de los hogares y los precios compartidos (Cloud Firestore), en servidores de Google.</td></tr>
-    <tr><th>OpenStreetMap (servicio Overpass)</th><td>Da los comercios cercanos. Recibe un punto aproximado y lo que escribís al buscar un comercio por su nombre.</td></tr>
+    <tr><th>Photon (Komoot) y Overpass</th><td>Buscan comercios en los datos de OpenStreetMap. Reciben un punto aproximado, lo que escribís al buscar un comercio por su nombre y, a veces, cuál es el comercio del que hace falta la dirección.</td></tr>
     <tr><th>OpenFreeMap y jsDelivr</th><td>Entregan las imágenes del mapa y la biblioteca que lo dibuja. Como cualquier sitio web, ven la dirección IP de tu conexión y qué parte del mapa mirás.</td></tr>
     <tr><th>Open Food Facts</th><td>Base pública de productos. Recibe el código de barras que escaneás, para decir de qué producto es.</td></tr>
     <tr><th>Google Fonts y el alojamiento del sitio</th><td>Entregan las tipografías y los archivos de la app. Como cualquier sitio web, ven la dirección IP de tu conexión.</td></tr>

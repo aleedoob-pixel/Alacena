@@ -2307,8 +2307,9 @@ const Lector = (() => {
 
 /* Lo que la libreta sabe de los comercios y de los hogares de la zona, con mapas libres (OpenStreetMap):
      · dónde está el teléfono: se lo pregunta al navegador cuando la persona lo pide, y queda guardado solo acá;
-     · los comercios: los de OpenStreetMap (por el servicio Overpass) y los que marcan los hogares de la libreta
-       cuando uno no figura; buscarlos cerca o por su nombre y dibujarlos en el mapa (MapLibre + OpenFreeMap);
+     · los comercios: los de OpenStreetMap (los busca el servicio Photon, de Komoot) y los que marcan los hogares
+       de la libreta cuando uno no figura; buscarlos cerca o por su nombre y dibujarlos en el mapa (MapLibre +
+       OpenFreeMap). Para la dirección de uno que no se conoce, el servicio Overpass;
      · los precios que comparten los hogares de la zona: leerlos y aportar los propios (por Datos.precios).
    No hace falta clave ni cuenta en ningún servicio. Los datos de OpenStreetMap son libres (licencia ODbL): se
    pueden guardar, y el mapa muestra siempre «© OpenStreetMap».
@@ -2320,14 +2321,15 @@ const Cerca = (() => {
   const N = Nucleo, A = Ahorro;
   let activo = true;
   try { if (typeof mapasLibres !== 'undefined' && mapasLibres === false) activo = false; } catch (e) { /* config.js no lo dice: se usan */ }
-  const OVERPASS = window.LIBRETA_OVERPASS || ['https://overpass-api.de/api/interpreter', 'https://overpass.private.coffee/api/interpreter'];
+  const PHOTON = window.LIBRETA_PHOTON || 'https://photon.komoot.io';
+  const OVERPASS = window.LIBRETA_OVERPASS || 'https://overpass-api.de/api/interpreter';
   const ESTILO = window.LIBRETA_ESTILO || 'https://tiles.openfreemap.org/styles/liberty';
   const MAPLIBRE = window.LIBRETA_MAPLIBRE || 'https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl';
   const DIA = 864e5;
   const RADIO_CERCA = 1500;        // metros: hasta dónde se buscan comercios para elegir
-  const RADIO_NOMBRE = 15000;      // metros: hasta dónde se busca un comercio por su nombre
+  const RADIO_NOMBRE = 30000;      // metros: hasta dónde sirve un comercio buscado por su nombre
   const RADIO_ZONA = 4000;         // metros: hasta dónde interesan los precios de otros hogares
-  const PASO_OSM = 0.01;           // los comercios de OpenStreetMap se piden por cuadros de una centésima de grado (~1 km)
+  const PASO_OSM = 0.005;          // los cercanos se guardan por cuadros de media centésima de grado (~500 m)
   const VIDA_OSM = 14 * DIA;       // y se vuelven a pedir a las dos semanas
   const MAX_LUGARES = 400;         // cuántos comercios recuerda el teléfono (dónde quedan y cómo se llaman)
 
@@ -2397,39 +2399,43 @@ const Cerca = (() => {
   }
   const conocer = l => { conocidos.set(l.id, l); return l; };
 
-  /* ---------- OpenStreetMap, por el servicio Overpass ----------
-     Se pide solo lo que es comercio de comida o de la casa, y cada cuadro una vez cada dos semanas. */
-  const SHOP = 'supermarket|convenience|greengrocer|butcher|bakery|pastry|deli|beverages|alcohol|wine|general|department_store|variety_store|health_food|dairy|cheese|frozen_food|seafood|spices|confectionery|chemist|wholesale|farm|pet|kiosk|food|coffee|tea|organic|nuts|water';
-  const AMENITY = 'pharmacy|marketplace';
+  /* ---------- OpenStreetMap ----------
+     Se pide solo lo que es comercio de comida o de la casa. Los cercanos y la búsqueda por nombre, a Photon (es
+     rápido y está hecho para buscar mientras se escribe); la dirección de uno que no se conoce, a Overpass. */
+  const SHOP = ['supermarket', 'convenience', 'greengrocer', 'butcher', 'bakery', 'pastry', 'deli', 'beverages', 'alcohol', 'wine', 'general', 'department_store', 'variety_store',
+    'health_food', 'dairy', 'cheese', 'frozen_food', 'seafood', 'spices', 'confectionery', 'chemist', 'wholesale', 'farm', 'pet', 'kiosk', 'food', 'coffee', 'tea', 'organic', 'nuts', 'water'];
+  const AMENITY = ['pharmacy', 'marketplace'];
   const RUBROS = { supermarket: 'Supermercado', convenience: 'Almacén', greengrocer: 'Verdulería', butcher: 'Carnicería', bakery: 'Panadería', pastry: 'Confitería', deli: 'Fiambrería',
     beverages: 'Bebidas', alcohol: 'Bebidas', wine: 'Vinoteca', general: 'Almacén', department_store: 'Tienda', variety_store: 'Bazar', health_food: 'Dietética', dairy: 'Lácteos',
     cheese: 'Quesería', frozen_food: 'Congelados', seafood: 'Pescadería', spices: 'Especias', confectionery: 'Golosinas', chemist: 'Perfumería', wholesale: 'Mayorista', farm: 'Granja',
     pet: 'Mascotas', kiosk: 'Kiosco', food: 'Alimentos', coffee: 'Café', tea: 'Té', organic: 'Orgánicos', nuts: 'Frutos secos', water: 'Agua', pharmacy: 'Farmacia', marketplace: 'Mercado' };
-  const rubroDe = t => RUBROS[t.shop] || RUBROS[t.amenity] || 'Comercio';
+  const FILTRO = SHOP.map(t => 'osm_tag=shop:' + t).concat(AMENITY.map(t => 'osm_tag=amenity:' + t)).join('&');
+  const n6 = x => Math.round(x * 1e6) / 1e6;
+  async function pedirJson(url, op, ms) {
+    const ctl = typeof AbortController === 'function' ? new AbortController() : null, reloj = setTimeout(() => ctl && ctl.abort(), ms || 15000);
+    try {
+      const r = await fetch(url, Object.assign({ signal: ctl ? ctl.signal : undefined }, op || {}));
+      if (r.status === 429 || r.status === 503 || r.status === 504) throw { code: 'ocupado', message: 'HTTP ' + r.status };
+      if (!r.ok) throw { code: 'error', message: 'HTTP ' + r.status };
+      return await r.json();
+    } catch (e) { throw e && e.code ? e : { code: 'sin-red', message: String((e && e.message) || e) }; }
+    finally { clearTimeout(reloj); }
+  }
+  // Un lugar de Photon (GeoJSON) como comercio de la libreta.
+  function dePhoton(f) {
+    const p = (f && f.properties) || {}, c = f && f.geometry && f.geometry.coordinates, t = { N: 'n', W: 'w', R: 'r' }[p.osm_type];
+    if (!Array.isArray(c) || !t || !p.osm_id || !A.puntoValido(c[1], c[0])) return null;
+    const rubro = RUBROS[p.osm_value] || 'Comercio', calle = [p.street, p.housenumber].filter(Boolean).join(' ');
+    return { id: `osm:${t}${p.osm_id}`, nombre: String(p.name || rubro).slice(0, 80), direccion: calle.slice(0, 120), rubro, lat: c[1], lon: c[0] };
+  }
+  // Un elemento de Overpass como comercio de la libreta.
   function deOsm(el) {
     const t = el.tags || {}, lat = typeof el.lat === 'number' ? el.lat : el.center && el.center.lat, lon = typeof el.lon === 'number' ? el.lon : el.center && el.center.lon;
     if (!A.puntoValido(lat, lon) || !el.id || !/^(node|way|relation)$/.test(el.type)) return null;
-    const rubro = rubroDe(t), calle = [t['addr:street'], t['addr:housenumber']].filter(Boolean).join(' ');
+    const rubro = RUBROS[t.shop] || RUBROS[t.amenity] || 'Comercio', calle = [t['addr:street'], t['addr:housenumber']].filter(Boolean).join(' ');
     return { id: `osm:${el.type[0]}${el.id}`, nombre: String(t.name || t.brand || rubro).slice(0, 80), direccion: calle.slice(0, 120), rubro, lat, lon };
   }
-  async function overpass(q) {
-    let ultimo = null;
-    for (const url of OVERPASS) {
-      const ctl = typeof AbortController === 'function' ? new AbortController() : null, reloj = setTimeout(() => ctl && ctl.abort(), 25000);
-      try {
-        const r = await fetch(url, { method: 'POST', body: new URLSearchParams({ data: q }), signal: ctl ? ctl.signal : undefined });
-        if (r.status === 429 || r.status === 504 || r.status === 503) { ultimo = { code: 'ocupado', message: 'HTTP ' + r.status }; continue; }
-        if (!r.ok) { ultimo = { code: 'error', message: 'HTTP ' + r.status }; continue; }
-        const j = await r.json();
-        return Array.isArray(j.elements) ? j.elements : [];
-      } catch (e) { ultimo = { code: 'sin-red', message: String((e && e.message) || e) }; }
-      finally { clearTimeout(reloj); }
-    }
-    throw ultimo || { code: 'sin-red' };
-  }
-  const n6 = x => Math.round(x * 1e6) / 1e6;
-  const cerca = (r, lat, lon) => `(around:${Math.round(r)},${n6(lat)},${n6(lon)})`;
-  // Los comercios de un cuadro (con un margen, para que alcancen a 1,5 km de cualquier punto del cuadro).
+  // Los comercios más cercanos a un punto (hasta 50, a 1,5 km), guardados por cuadro para no pedirlos de nuevo.
   const CLAVE_OSM = 'libreta.osm';
   const pidiendo = new Map();
   function delCuadro(pos) {
@@ -2439,13 +2445,12 @@ const Cerca = (() => {
       return Promise.resolve(g.l.map(x => conocer({ id: x[0], nombre: x[1], direccion: x[2], rubro: x[3], lat: x[4], lon: x[5] })));
     }
     if (pidiendo.has(k)) return pidiendo.get(k);
-    const lat = (cy + 0.5) * PASO_OSM - 90, lon = (cx + 0.5) * PASO_OSM - 180, r = RADIO_CERCA + 900;
-    const q = `[out:json][timeout:25];(nwr["shop"~"^(${SHOP})$"]${cerca(r, lat, lon)};nwr["amenity"~"^(${AMENITY})$"]${cerca(r, lat, lon)};);out center tags 400;`;
-    const p = overpass(q).then(els => {
-      const l = els.map(deOsm).filter(Boolean).map(conocer);
+    const lat = n6((cy + 0.5) * PASO_OSM - 90), lon = n6((cx + 0.5) * PASO_OSM - 180);      // el centro del cuadro: no el punto exacto del teléfono
+    const p = pedirJson(`${PHOTON}/reverse?lat=${lat}&lon=${lon}&radius=${(RADIO_CERCA + 400) / 1000}&limit=50&lang=default&${FILTRO}`).then(j => {
+      const l = ((j && j.features) || []).map(dePhoton).filter(Boolean).map(conocer);
       const todos = leer(CLAVE_OSM, {}), o = esObjeto(todos) ? todos : {};
       o[k] = { t: Date.now(), l: l.map(x => [x.id, x.nombre, x.direccion, x.rubro, x.lat, x.lon]) };
-      for (const v of Object.keys(o).sort((a, b) => o[b].t - o[a].t).slice(6)) delete o[v];       // se guardan los últimos 6 cuadros
+      for (const v of Object.keys(o).sort((a, b) => o[b].t - o[a].t).slice(8)) delete o[v];       // se guardan los últimos 8 cuadros
       guardar(CLAVE_OSM, o);
       return l;
     });
@@ -2486,13 +2491,11 @@ const Cerca = (() => {
     ultCerca = { pos, t: Date.now(), lista: lista.slice(0, 40) };
     return ultCerca.lista;
   }
-  // Para comparar nombres sin mayúsculas ni tildes; y para buscarlos en OpenStreetMap igual de tolerante.
+  // Para comparar nombres sin mayúsculas ni tildes.
   const plano = s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9ñ ]+/g, ' ').replace(/\s+/g, ' ').trim();
-  const TOLERA = { a: '[aáàäâ]', e: '[eéèëê]', i: '[iíìïî]', o: '[oóòöô]', u: '[uúùüû]', n: '[nñ]', c: '[cç]' };
-  const patron = s => plano(s).split('').map(ch => TOLERA[ch] || (ch === ' ' ? '.*' : ch)).join('');
   const busquedas = new Map();
   /* Buscar un comercio por su nombre: primero entre los que ya conoce el teléfono (los cercanos, los marcados por
-     la zona y los del hogar); si son pocos, una consulta a OpenStreetMap en 15 km a la redonda (una por texto).
+     la zona y los del hogar); si son pocos, en OpenStreetMap cerca de `pos` (una consulta por texto).
      Devuelve [{ id, nombre, direccion, rubro, lat, lon, dist }]. */
   async function sugerir(texto, pos) {
     const q = plano(texto);
@@ -2506,9 +2509,9 @@ const Cerca = (() => {
       else {
         const k = A.celda(centro.lat, centro.lon) + '|' + q;
         if (!busquedas.has(k)) {
-          const p = patron(q), r = cerca(RADIO_NOMBRE, centro.lat, centro.lon);
-          const consulta = `[out:json][timeout:25];(nwr["shop"~"^(${SHOP})$"]["name"~"${p}",i]${r};nwr["shop"~"^(${SHOP})$"]["brand"~"${p}",i]${r};nwr["amenity"~"^(${AMENITY})$"]["name"~"${p}",i]${r};);out center tags 60;`;
-          const pr = overpass(consulta).then(els => els.map(deOsm).filter(Boolean).map(conocer));
+          const lat = n6(Math.round(centro.lat * 100) / 100), lon = n6(Math.round(centro.lon * 100) / 100);       // cerca de dónde está, sin decir el punto exacto
+          const pr = pedirJson(`${PHOTON}/api?q=${encodeURIComponent(texto.trim().slice(0, 60))}&lat=${lat}&lon=${lon}&limit=12&lang=default&${FILTRO}`)
+            .then(j => ((j && j.features) || []).map(dePhoton).filter(Boolean).filter(l => A.distancia(centro.lat, centro.lon, l.lat, l.lon) <= RADIO_NOMBRE).map(conocer));
           busquedas.set(k, pr);
           pr.catch(() => busquedas.delete(k));
         }
@@ -2527,8 +2530,9 @@ const Cerca = (() => {
     try {
       const m = /^osm:([nwr])(\d+)$/.exec(id), c = /^com:(.+)$/.exec(id);
       if (m) {
-        const els = await overpass(`[out:json][timeout:25];${{ n: 'node', w: 'way', r: 'relation' }[m[1]]}(${m[2]});out center tags;`);
-        l = els.map(deOsm).filter(Boolean)[0] || null;
+        const q = `[out:json][timeout:10];${{ n: 'node', w: 'way', r: 'relation' }[m[1]]}(${m[2]});out center tags;`;
+        const j = await pedirJson(OVERPASS, { method: 'POST', body: new URLSearchParams({ data: q }) }, 12000);
+        l = ((j && j.elements) || []).map(deOsm).filter(Boolean)[0] || null;
       } else if (c && Datos.comercios) {
         const d = await Datos.comercios.leer(c[1]);
         if (d && A.puntoValido(d.la, d.lo)) l = { id, nombre: String(d.n || 'Comercio'), direccion: String(d.a || ''), rubro: String(d.r || ''), lat: d.la, lon: d.lo, zona: true };
@@ -3251,7 +3255,11 @@ const Cerca = (() => {
   /* ---------- ajustes del hogar ---------- */
   function leerAjustes(d) {
     const comercios = {};
-    for (const k in esObjeto(d.comercios) ? d.comercios : {}) { const c = d.comercios[k]; if (esObjeto(c) && typeof c.n === 'string' && c.n) comercios[k] = { n: c.n }; }
+    for (const k in esObjeto(d.comercios) ? d.comercios : {}) {
+      const c = d.comercios[k];
+      if (!esObjeto(c) || typeof c.n !== 'string' || !c.n) continue;
+      comercios[k] = A.puntoValido(c.la, c.lo) ? { n: c.n, la: c.la, lo: c.lo } : { n: c.n };      // dónde queda: es un comercio, no una casa
+    }
     return {
       frecuencia: [7, 15, 30].includes(d.frecuencia) ? d.frecuencia : 7, presupuesto: +d.presupuesto > 0 ? +d.presupuesto : 0,
       compartir: d.compartir === true ? true : d.compartir === false ? false : null, comercios,
@@ -3296,6 +3304,11 @@ const Cerca = (() => {
     return '';
   }
   const nombreDeRef = ref => (ref && E.ajustes.comercios[ref] ? E.ajustes.comercios[ref].n : '');
+  // Dónde queda un comercio del hogar: lo anotado en el hogar o, si no, lo que sepa el mapa.
+  function ubicacionDe(ref) {
+    const c = ref && E.ajustes.comercios[ref];
+    return c && A.puntoValido(c.la, c.lo) ? Promise.resolve({ lat: c.la, lon: c.lo }) : C.ubicacion(ref);
+  }
   const precioDe = (valor, comercio, fecha) => { const n = limpio(comercio).slice(0, 60), o = { valor, comercio: n, ref: refDeComercio(n) }; if (fecha) o.fecha = fecha; return o; };
   const conMapa = () => !!(C && C.conMapa());
   const notaComercio = nombre => (refDeComercio(nombre) ? 'Ubicado en el mapa.' : limpio(nombre) ? 'Tocá el pin para ubicarlo en el mapa.' : '');
@@ -3479,7 +3492,7 @@ const Cerca = (() => {
     // se mira cerca de donde se compró; si ese comercio no está ubicado, cerca del teléfono
     const aca = C.ultimaPosicion();
     let centro = null;
-    if (ref) { try { centro = await C.ubicacion(ref); } catch (e) { centro = null; } }
+    if (ref) { try { centro = await ubicacionDe(ref); } catch (e) { centro = null; } }
     if (!centro) centro = aca;
     if (centro) {
       try {
@@ -4443,7 +4456,7 @@ const Cerca = (() => {
     for (const c of A.porComercio(p, hoy, 90)) {
       if (!c.ref || pines.some(x => x.k === c.ref)) continue;
       let u = null;
-      try { u = await C.ubicacion(c.ref); } catch (e) { u = null; }
+      try { u = await ubicacionDe(c.ref); } catch (e) { u = null; }
       if (!u) continue;
       pines.push({ k: c.ref, lat: u.lat, lon: u.lon, dist: pos ? A.distancia(pos.lat, pos.lon, u.lat, u.lon) : null, nombre: c.comercio, publico: '', tono: 'mio', baratos: 0, texto: N.plata(c.precio),
         renglones: [{ nombre: p.nombre, precio: c.precio, barato: false, detalle: `lo pagaste ${A.haceDias(hoy - c.dia)}` }] });
@@ -4617,7 +4630,7 @@ const Cerca = (() => {
     let id = l.id;
     try {
       if (l.nuevo) id = await C.marcar(n, l.lat, l.lon, S.rubro);
-      await cambiarAjustes({ comercios: Object.assign({}, E.ajustes.comercios, { [id]: { n } }) });
+      await cambiarAjustes({ comercios: Object.assign({}, E.ajustes.comercios, { [id]: { n, la: l.lat, lo: l.lon } }) });
     } catch (e) { if (E.hoja === H && H.sub === S) decir((e && e.texto) || textoFallo(e)); return; }
     if (!l.nuevo) C.recordar(id, l.lat, l.lon, l.nombre, l.direccion, l.rubro);
     pintarComercios();
