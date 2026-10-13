@@ -39,28 +39,25 @@ const canonico = c => c.padStart(14, '0');
 const enArgentina = (lat, lon) => isFinite(lat) && isFinite(lon) && lat > -56 && lat < -21 && lon > -74 && lon < -53;
 
 /* ---------- bajar el archivo del día ---------- */
-function pedir(url, destino, intentos = 3) {
+/* Con curl (está en cualquier Linux y en las máquinas de GitHub): fuerza IPv4, sigue redirecciones y reintenta.
+   El portal a veces no contesta por IPv6 o tarda en aceptar la conexión. Sin `destino`, devuelve el texto. */
+function pedir(url, destino) {
   return new Promise((ok, mal) => {
-    const una = (u, saltos) => {
-      const r = https.get(u, { headers: { 'user-agent': 'libreta-del-hogar (precios SEPA)' }, timeout: 60000 }, res => {
-        if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location && saltos < 6) { res.resume(); una(new URL(res.headers.location, u).href, saltos + 1); return; }
-        if (res.statusCode !== 200) { res.resume(); mal(new Error(`HTTP ${res.statusCode} en ${u}`)); return; }
-        if (!destino) { let b = ''; res.setEncoding('utf8'); res.on('data', d => { b += d; }); res.on('end', () => ok(b)); return; }
-        const f = fs.createWriteStream(destino);
-        let quieto = setTimeout(() => r.destroy(new Error('sin datos durante 2 minutos')), 120000);
-        res.on('data', () => { clearTimeout(quieto); quieto = setTimeout(() => r.destroy(new Error('sin datos durante 2 minutos')), 120000); });
-        res.pipe(f);
-        f.on('finish', () => { clearTimeout(quieto); f.close(() => ok(destino)); });
-        res.on('error', e => { clearTimeout(quieto); mal(e); });
-      });
-      r.on('timeout', () => r.destroy(new Error('el portal no contesta')));
-      r.on('error', mal);
-    };
-    una(url, 0);
-  }).catch(e => (intentos > 1 ? new Promise(r => setTimeout(r, 5000)).then(() => pedir(url, destino, intentos - 1)) : Promise.reject(e)));
+    const a = ['-fsSL', '-4', '--retry', '5', '--retry-delay', '10', '--retry-all-errors', '--connect-timeout', '40', '--speed-limit', '1000', '--speed-time', '120',
+      '-A', 'Mozilla/5.0 (libreta-del-hogar; precios SEPA)', url];
+    if (destino) a.push('-o', destino);
+    const p = spawn('curl', a), partes = [], err = [];
+    p.stdout.on('data', d => partes.push(d));
+    p.stderr.on('data', d => err.push(d));
+    p.on('error', mal);
+    p.on('close', c => (c === 0 ? ok(destino || Buffer.concat(partes).toString('utf8')) : mal(new Error(`curl ${c}: ${Buffer.concat(err).toString().trim()} (${url})`))));
+  });
 }
+const PORTALES = [CKAN, 'https://datos.gob.ar/api/3/action/package_show?id=precios-claros-base-sepa'];
 async function bajar(dir) {
-  const j = JSON.parse(await pedir(CKAN));
+  let j = null, ultimo = null;
+  for (const u of PORTALES) { try { j = JSON.parse(await pedir(u)); break; } catch (e) { ultimo = e; log('no contestó', u, '·', e.message); } }
+  if (!j) throw ultimo;
   const recursos = ((j.result && j.result.resources) || []).filter(r => /zip/i.test(r.format || '') || /\.zip(\?|$)/i.test(r.url || ''));
   if (!recursos.length) throw new Error('el portal no tiene archivos .zip para este conjunto');
   const cuando = r => Date.parse(r.last_modified || r.created || r.metadata_modified || 0) || 0;
