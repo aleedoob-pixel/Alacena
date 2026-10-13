@@ -9,9 +9,10 @@
      5. QR         dibuja el código QR de las invitaciones
      6. Fotos      las fotos de los tickets, guardadas en cada teléfono (IndexedDB)
      7. Datos      la cuenta de Google, el hogar y sus datos en Firebase (Cloud Firestore)
-     8. Lector     busca un producto por su código de barras en Open Food Facts
-     9. Cerca      OpenStreetMap: los comercios, el mapa y los precios que comparten los hogares de la zona
-    10. la pantalla: entrada, alacena, compras, gastos, novedades, escáner, tickets, notas y ajustes */
+     8. IA         Gemini, de Google: lee fotos de promos y propone comidas con lo que hay en la alacena
+     9. Lector     busca un producto por su código de barras en Open Food Facts
+    10. Cerca      OpenStreetMap: los comercios, el mapa y los precios que comparten los hogares de la zona
+    11. la pantalla: entrada, alacena, compras, gastos, novedades, escáner, tickets, notas y ajustes */
 
 /* Lector de códigos de barras de producto (EAN-13, UPC-A y EAN-8) sobre una
    imagen en escala de grises.
@@ -1406,7 +1407,7 @@ const Datos = (() => {
         try {   // con copia en el teléfono, compartida entre pestañas; si el navegador no puede, sin copia
           db = fs.initializeFirestore(app, { ignoreUndefinedProperties: true, localCache: fs.persistentLocalCache({ tabManager: fs.persistentMultipleTabManager() }) });
         } catch (e) { db = fs.getFirestore(app); }
-        F = { au, fs, auth, db };
+        F = { app, au, fs, auth, db };
         // para que la próxima vez arranque sin conexión, el service worker guarda también la biblioteca
         try {
           if (navigator.serviceWorker) navigator.serviceWorker.ready.then(r => { if (r.active) r.active.postMessage({ guardar: ['firebase-app.js', 'firebase-auth.js', 'firebase-firestore.js'].map(f => SDK + f) }); }, () => {});
@@ -2254,11 +2255,13 @@ const Datos = (() => {
     comercios,
     promos,
     mover,
+    // La app de Firebase ya iniciada y de dónde se baja la biblioteca: para sumarle otros servicios (la IA).
+    async firebase() { await cargar(); return { app: F.app, sdk: SDK }; },
     textos: {
       sinConexion: 'No se pudo abrir la conexión con el servidor. Revisá internet y recargá la página.',
       donde: 'Los datos de este hogar se guardan en Firebase, un servicio de Google, y los ven solo sus integrantes. Cada teléfono guarda una copia para seguir andando sin conexión. Las fotos de los tickets quedan en el teléfono donde se cargaron.',
       fallo: 'No se pudo guardar. Revisá la conexión y probá de nuevo.',
-      version: 'Libreta del hogar · versión 2.2.0 (2026-10-13)',       // el número y la fecha los pone armar.js
+      version: 'Libreta del hogar · versión 2.3.0 (2026-10-13)',       // el número y la fecha los pone armar.js
     },
     /* Devuelve { db, permiso } si en este teléfono ya hay una cuenta con su hogar. Si no, { puerta, alEntrar }:
        la app muestra la entrada y `alEntrar` se cumple cuando se entra a un hogar. null: sin conexión. */
@@ -2279,6 +2282,219 @@ const Datos = (() => {
       }
       return esperar(u ? 'sin-hogar' : 'sin-usuario');
     },
+  };
+})();
+
+
+/* La inteligencia artificial de la libreta: Gemini, de Google, a través de Firebase (Firebase AI Logic).
+   Hace dos cosas:
+     · lee la foto de un cartel, folleto o pantalla con una promo y completa la promo para cargarla;
+     · propone comidas con lo que hay en la alacena y dice qué falta comprar.
+   Qué se le manda: la foto del cartel, o la lista de productos de la alacena (nombre, cuántos hay y su categoría).
+   Nunca tickets, nombres de personas, cuentas ni direcciones: con la cuota gratis, Google puede usar lo que
+   recibe para mejorar sus productos. Siempre se le muestra a la persona lo que se entendió antes de guardarlo.
+   Firebase exige App Check (reCAPTCHA de Google, invisible) para que solo esta app use la cuota.
+   Se configura en config.js (`inteligencia`); sin la clave de reCAPTCHA queda apagada. */
+const IA = (() => {
+  'use strict';
+  const N = Nucleo;
+  let cfg = {};
+  try { if (typeof inteligencia === 'object' && inteligencia) cfg = inteligencia; } catch (e) { /* config.js sin la IA */ }
+  const MODELOS = [cfg.modelo || 'gemini-3.5-flash', cfg.respaldo || 'gemini-3.5-flash-lite'].filter((m, i, l) => m && l.indexOf(m) === i);
+  const configurada = () => cfg.activa !== false && !!cfg.recaptcha;
+  let apagada = '';          // por qué no anda en esta visita (la cuota de hoy, App Check), si se supo
+
+  const texto = (v, n) => (typeof v === 'string' ? v : v == null ? '' : String(v)).replace(/\s+/g, ' ').trim().slice(0, n);
+  const pausa = ms => new Promise(r => setTimeout(r, ms));
+  const conTope = (p, ms) => Promise.race([p, pausa(ms).then(() => { throw { code: 'tarde' }; })]);
+
+  /* ---------- la conexión con Gemini ---------- */
+  let motor = null;
+  function cargar() {
+    if (!motor) {
+      motor = (async () => {
+        const { app, sdk } = await Datos.firebase();
+        const [ai, ac] = await Promise.all([import(sdk + 'firebase-ai.js'), import(sdk + 'firebase-app-check.js')]);
+        try { ac.initializeAppCheck(app, { provider: new ac.ReCaptchaEnterpriseProvider(cfg.recaptcha), isTokenAutoRefreshEnabled: false }); }
+        catch (e) { if (!/already|ya/i.test(String(e && e.message))) throw e; }
+        const backend = ai.getAI(app, { backend: new ai.GoogleAIBackend() });
+        return MODELOS.map(m => ai.getGenerativeModel(backend, { model: m, generationConfig: { responseMimeType: 'application/json', temperature: 0.4 } }));
+      })();
+      motor.catch(() => { motor = null; });
+    }
+    return motor;
+  }
+  // Qué clase de falla es, mirando el código y el mensaje (Firebase los trae en inglés y varían entre versiones).
+  function clase(e) {
+    if (e && ['sin-red', 'tarde', 'imagen', 'vacio', 'cancelado'].includes(e.code)) return e.code;
+    const t = [e && e.code, e && e.message, e && e.customErrorData && JSON.stringify(e.customErrorData)].join(' ');
+    if (/429|RESOURCE_EXHAUSTED|quota|rate.?limit/i.test(t)) return 'cuota';
+    if (/app.?check|recaptcha|attestation|401|UNAUTHENTICATED/i.test(t)) return 'verificacion';
+    if (/404|not.?found|is not supported|unsupported model/i.test(t)) return 'modelo';
+    if (/403|PERMISSION_DENIED|API has not been used|disabled|billing/i.test(t)) return 'permiso';
+    if (/SAFETY|blocked|PROHIBITED/i.test(t)) return 'bloqueado';
+    if (/fetch|network|Failed to fetch|unavailable|503|500/i.test(t)) return 'sin-red';
+    return 'otro';
+  }
+  // Saca el JSON de la respuesta, aunque venga envuelto en ```json … ```.
+  function leerJSON(t) {
+    const s = String(t || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '');
+    try { return JSON.parse(s); } catch (e) { /* sigue */ }
+    const a = s.indexOf('{'), b = s.lastIndexOf('}');
+    if (a >= 0 && b > a) { try { return JSON.parse(s.slice(a, b + 1)); } catch (e) { /* sigue */ } }
+    throw { code: 'vacio' };
+  }
+  async function blob64(b) {
+    const buf = new Uint8Array(await b.arrayBuffer());
+    let s = '';
+    for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+    return btoa(s);
+  }
+  // Un pedido: la consigna y, si hay, una foto. Si el modelo principal está saturado, prueba con el de respaldo.
+  async function pedir(consigna, foto, signal) {
+    if (navigator.onLine === false) throw { code: 'sin-red' };
+    if (signal && signal.aborted) throw { code: 'cancelado' };
+    const modelos = await conTope(cargar(), 25000);
+    const partes = [{ text: consigna }];
+    if (foto) partes.push({ inlineData: { mimeType: foto.type || 'image/jpeg', data: await blob64(foto) } });
+    const cancelar = new Promise((_, mal) => { if (signal) signal.addEventListener('abort', () => mal({ code: 'cancelado' })); });
+    let ultimo = null;
+    for (const m of modelos) {
+      try {
+        const r = await Promise.race([conTope(m.generateContent(partes), 90000), cancelar]);
+        apagada = '';
+        return leerJSON(r.response.text());
+      } catch (e) {
+        ultimo = e;
+        const c = clase(e);
+        if (c !== 'cuota' && c !== 'modelo') break;
+      }
+    }
+    if (clase(ultimo) === 'cuota') apagada = 'cuota';
+    throw ultimo;
+  }
+
+  /* ---------- la foto de una promo ---------- */
+  const DIAS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+  function promptPromo(medios, hoy) {
+    const d = new Date(hoy + 'T12:00:00');
+    return `Sos el lector de promociones de una libreta de compras que comparten familias de Argentina. La foto muestra un cartel, un folleto, una góndola, una vidriera o la pantalla de una app de banco o billetera con una promoción para comprar más barato.
+
+Respondé SOLO con un objeto JSON, con esta forma:
+{"esPromo": true, "comercio": "", "texto": "", "pct": 0, "medio": "", "dias": [], "hasta": "", "dudas": ""}
+
+- esPromo: false si en la foto no hay ninguna promoción de precios.
+- comercio: el nombre comercial del súper, almacén o negocio donde vale ("Coto", "Día", "Carrefour", "Changomás"), si se ve. Si es una promo de un banco que vale en varios comercios, "".
+- texto: la promo en pocas palabras, como la contaría una persona, de hasta 100 caracteres: qué descuento, en qué productos y el tope o condición más importante. Ejemplos: "25 % en carnes, tope $ 10.000 por semana", "2x1 en yogures La Serenísima", "20 % en todo pagando con QR".
+- pct: el porcentaje de descuento, entero. Un 2x1 es 50; un 3x2, 33; «la segunda al 70 %», 35; «la segunda al 50 %», 25. Si no hay un porcentaje claro, 0.
+- medio: con qué hay que pagar para tener el descuento. Si es uno de estos, escribilo igual: ${medios.join(', ')}. Si es otro banco, tarjeta o billetera, su nombre corto. Si vale con cualquier medio de pago o no dice, "${medios[0]}".
+- dias: los días de la semana en que vale, como números (0 domingo, 1 lunes, 2 martes, 3 miércoles, 4 jueves, 5 viernes, 6 sábado). Si vale todos los días o no dice, [].
+- hasta: la última fecha en que vale, como "AAAA-MM-DD", solo si figura. Hoy es ${DIAS[d.getDay()]} ${hoy}. Si dice solo día y mes, es la próxima vez que llega esa fecha. Si no figura, "".
+- dudas: "" o una frase corta sobre lo que no se leyó bien.
+
+No inventes nada que no esté en la foto.`;
+  }
+  function normalizarPromo(r, medios, hoy) {
+    if (!r || typeof r !== 'object' || Array.isArray(r)) return null;
+    const t = texto(r.texto, 120);
+    let pct = Math.round(N.aNumero(r.pct));
+    if (!isFinite(pct) || pct < 0 || pct > 80) pct = 0;
+    const m = texto(r.medio, 30), igual = medios.find(x => N.norm(x) === N.norm(m));
+    const dias = Array.from(new Set((Array.isArray(r.dias) ? r.dias : []).map(Number).filter(d => Number.isInteger(d) && d >= 0 && d <= 6))).sort();
+    const hd = N.diaDe(hoy);
+    let hasta = N.fechaValida(r.hasta) ? r.hasta : '';
+    if (hasta && N.diaDe(hasta) < hd) hasta = '';
+    if (hasta && N.diaDe(hasta) > hd + 62) hasta = N.isoDeDia(hd + 62);
+    return {
+      esPromo: r.esPromo !== false && t.length >= 3, comercio: texto(r.comercio, 60), texto: t, pct,
+      medio: igual || m || medios[0], dias: dias.length === 7 ? [] : dias, hasta, dudas: texto(r.dudas, 200),
+    };
+  }
+
+  /* ---------- qué cocinar ---------- */
+  const COMIDAS = {
+    comida: 'un almuerzo o una cena',
+    rapido: 'algo rápido, que se haga en menos de 30 minutos',
+    dulce: 'algo dulce o para la merienda',
+    vianda: 'una vianda para llevar al trabajo o al colegio',
+  };
+  function promptRecetas(lista, o) {
+    const ya = (o.anteriores || []).filter(Boolean);
+    return `Sos el ayudante de cocina de una familia de Argentina. Con lo que tienen en la alacena, proponé 3 comidas caseras y realistas, de las que se cocinan en una casa argentina un día común.
+
+Buscan: ${COMIDAS[o.comida] || COMIDAS.comida}, para ${o.personas} ${o.personas === 1 ? 'persona' : 'personas'}.
+- Usá sobre todo lo que hay. Primero lo fresco (verduras, frutas, carnes, lácteos, pan), que se echa a perder.
+- Se supone que en la casa hay sal, pimienta, aceite, agua y condimentos secos comunes: no los pongas como faltantes.
+- Cada comida puede necesitar comprar como mucho 3 cosas; mejor si no hace falta comprar nada.
+- Cantidades para ${o.personas} ${o.personas === 1 ? 'persona' : 'personas'}, en medidas de cocina de acá (taza, cucharada, gramos, unidades).${ya.length ? `\n- No repitas estas, que ya vieron: ${ya.join('; ')}.` : ''}
+
+Respondé SOLO con un objeto JSON, con esta forma:
+{"recetas": [{"nombre": "", "minutos": 0, "usa": [1, 2], "faltan": [{"n": "", "cat": ""}], "pasos": ["", ""]}]}
+
+- nombre: cómo se llama la comida, corto ("Tarta de acelga y queso", "Arroz con pollo").
+- minutos: cuánto tarda en total, aproximado.
+- usa: los números de renglón de la alacena que usa.
+- faltan: lo que hay que comprar, con un nombre genérico y corto ("Tomate", "Crema de leche"); cat, una de estas claves: ${N.CATS_ALACENA.join(', ')}.
+- pasos: de 3 a 8 pasos cortos y claros, con las cantidades.
+
+alacena (número. producto · cuántos hay · categoría):
+${lista.map((x, i) => `${i + 1}. ${x.texto} · ${x.cant} · ${x.cat}`).join('\n')}`;
+  }
+  function normalizarRecetas(r, lista) {
+    const crudas = r && Array.isArray(r.recetas) ? r.recetas : Array.isArray(r) ? r : [];
+    const out = [];
+    for (const x of crudas.slice(0, 4)) {
+      if (!x || typeof x !== 'object') continue;
+      const nombre = N.mayuscula(texto(x.nombre, 80));
+      const pasos = (Array.isArray(x.pasos) ? x.pasos : []).map(p => texto(p, 300)).filter(Boolean).slice(0, 10);
+      if (!nombre || pasos.length < 2) continue;
+      const usa = Array.from(new Set((Array.isArray(x.usa) ? x.usa : []).map(Number).filter(i => Number.isInteger(i) && i >= 1 && i <= lista.length))).map(i => lista[i - 1].id);
+      const vistos = new Set(), faltan = [];
+      for (const f of Array.isArray(x.faltan) ? x.faltan.slice(0, 5) : []) {
+        const n = N.mayuscula(texto(f && typeof f === 'object' ? f.n || f.nombre : f, 40)), k = N.norm(n);
+        if (!n || vistos.has(k) || /^(sal|pimienta|aceite|agua)( y (sal|pimienta|aceite|agua))?$/.test(k)) continue;      // lo que se supone que hay
+        vistos.add(k);
+        faltan.push({ n, cat: f && N.CATS_ALACENA.includes(f.cat) ? f.cat : 'almacen' });
+      }
+      let minutos = Math.round(N.aNumero(x.minutos));
+      if (!isFinite(minutos) || minutos < 1 || minutos > 600) minutos = 0;
+      out.push({ nombre, minutos, usa, faltan, pasos });
+    }
+    return out.slice(0, 3);
+  }
+
+  return {
+    // Si la IA está configurada en este sitio. Que ande depende además de la conexión y de la cuota del día.
+    disponible: () => configurada() && typeof Datos !== 'undefined' && typeof Datos.firebase === 'function',
+    COMIDAS,
+    // Lee la foto (un Blob JPEG) de una promo. `medios`: los medios de pago que conoce la app, el primero «todos».
+    async promo(foto, medios, hoy, opciones) {
+      const r = await pedir(promptPromo(medios, hoy), foto, opciones && opciones.signal);
+      return normalizarPromo(r, medios, hoy);
+    },
+    // Propone comidas. `lista`: lo que hay en la alacena [{ id, texto, cant, cat }], lo fresco primero.
+    async recetas(lista, opciones) {
+      const o = Object.assign({ comida: 'comida', personas: 4, anteriores: [] }, opciones || {});
+      const r = await pedir(promptRecetas(lista, o), null, o.signal);
+      return normalizarRecetas(r, lista);
+    },
+    // Qué decirle a la persona cuando algo falla.
+    nota(e) {
+      switch (clase(e)) {
+        case 'sin-red': return 'No hay conexión con la IA. Revisá internet y probá de nuevo.';
+        case 'tarde': return 'La IA tardó demasiado en contestar. Probá de nuevo en un rato.';
+        case 'cuota': return 'La IA gratis llegó a su límite por ahora. Probá en un rato o mañana.';
+        case 'verificacion': return 'La IA no pudo verificar que la pedís desde la libreta. Recargá la página y probá de nuevo.';
+        case 'permiso': case 'modelo': return 'La IA no está habilitada en este momento. Probá más tarde.';
+        case 'bloqueado': return 'La IA no quiso procesar ese pedido. Probá con otra foto.';
+        case 'imagen': return 'No se pudo abrir esa imagen. Probá con otra foto.';
+        case 'vacio': return 'La IA contestó algo que no se entiende. Probá de nuevo.';
+        case 'cancelado': return '';
+        default: return 'No se pudo usar la IA. Probá de nuevo en un rato.';
+      }
+    },
+    get apagada() { return apagada; },
+    interno: { promptPromo, normalizarPromo, promptRecetas, normalizarRecetas, leerJSON, clase },
   };
 })();
 
@@ -3051,6 +3267,7 @@ const Cerca = (() => {
       log: stock > 0 && dia > hd - 200 && dia <= hd + 1 ? [[dia, 0, stock]] : [], creado: new Date().toISOString(),
     };
     if (d.marcaFija) doc.marcaFija = true;
+    if (d.pedido > 0) doc.pedido = d.pedido;
     if (d.diario === true || d.diario === false) doc.diario = d.diario;
     const ref = E.db.collection('productos').doc();
     await escribir(() => ref.set(doc));
@@ -3245,7 +3462,13 @@ const Cerca = (() => {
   ];
   // Con el mapa encendido hay un paso más: la comunidad de hogares de la zona.
   const PASO_ZONA = ['mapa', 'Una comunidad de hogares', 'Cuando anotás lo que pagaste, la libreta te avisa si otro hogar de tu zona lo consiguió más barato, y dónde. También ves los precios oficiales de los supermercados y las promos del día con tu banco o billetera. Compartir es optativo: va con el nombre que elijas para tu hogar, nunca con el tuyo.'];
-  const pasosTutorial = () => (conMapa() ? [TUTORIAL_BASE[0], TUTORIAL_BASE[1], PASO_ZONA, TUTORIAL_BASE[2], TUTORIAL_BASE[3]] : TUTORIAL_BASE);
+  // Con la IA encendida, otro: las ideas para cocinar y la foto de las promos.
+  const PASO_IA = ['olla', 'Ideas con inteligencia artificial', '¿No sabés qué cocinar? «¿Qué cocino?», en la Alacena, te propone comidas con lo que tenés y anota en la lista lo poco que falte. Y si ves un cartel de promo, sacale una foto: la IA la completa sola y la compartís con tu zona.'];
+  function pasosTutorial() {
+    const l = conMapa() ? [TUTORIAL_BASE[0], TUTORIAL_BASE[1], PASO_ZONA, TUTORIAL_BASE[2], TUTORIAL_BASE[3]] : TUTORIAL_BASE.slice();
+    if (hayIA()) l.splice(l.length - 1, 0, PASO_IA);
+    return l;
+  }
   const DIAS_SEMANA = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
   function vistaTutorial(paso, acciones) {
     const TUTORIAL = pasosTutorial(), [icono, titulo, texto] = TUTORIAL[Math.max(0, Math.min(TUTORIAL.length - 1, paso))];
@@ -3778,6 +4001,11 @@ const Cerca = (() => {
       <p class="mes-nota">ahorraste este mes comprando donde otros hogares encontraron mejor precio</p></div>`;
   }
   /* ---------- promos de la zona ---------- */
+  /* ---------- la IA (Gemini, ver ia.js): leer la foto de una promo y proponer comidas ----------
+     Cada teléfono elige si la usa (Ajustes); por omisión sí, cuando el sitio la tiene configurada. */
+  const CLAVE_IA = 'libreta.ia';
+  function iaElegida() { try { return localStorage.getItem(CLAVE_IA) !== 'no'; } catch (e) { return true; } }
+  function hayIA() { return typeof IA !== 'undefined' && IA.disponible() && iaElegida(); }
   const PROMO_MEDIOS = ['Todos los medios', 'Efectivo', 'MODO', 'Mercado Pago', 'Cuenta DNI', 'Banco Nación', 'Banco Provincia', 'Galicia', 'Santander', 'BBVA', 'Macro', 'Naranja X', 'Ualá', 'Jubilados'];
   const DIAS_CORTOS = ['D', 'L', 'M', 'M', 'J', 'V', 'S'];
   function diasTexto(d) {
@@ -3872,6 +4100,8 @@ const Cerca = (() => {
     if (E.filtro.chip === 'reponer' && !falta) E.filtro.chip = 'todo';
     const chips = [['todo', 'Todo']].concat(falta ? [['reponer', `Para reponer · ${falta}`]] : [], cats.map(c => [c, N.CATS[c]]));
     $('#al-filtros').hidden = filas.length < 6;
+    const cocina = $('#al-cocina');
+    if (cocina) cocina.hidden = !hayIA() || !filas.some(f => !f.p.ejemplo && +f.p.stock > 0);
     $('#al-chips').innerHTML = val(chips.map(([v, t]) => h`<button type="button" class="chip" data-act="chip" data-chip="${v}" aria-pressed="${String(E.filtro.chip === v)}">${t}</button>`));
 
     const caja = $('#al-lista');
@@ -4439,6 +4669,7 @@ const Cerca = (() => {
         ${H.error ? h`<p class="error" role="alert">${H.error}</p>` : ''}
         <div class="hoja-pie" data-escribe><button type="submit" class="btn btn-principal">Guardar</button></div>
         ${puedeCerca() ? bloqueZona() : ''}
+        ${typeof IA !== 'undefined' && IA.disponible() ? bloqueIA() : ''}
         ${Datos.hogar ? bloqueHogar(H) : ''}
         ${bloqueAportes()}
         ${!Datos.copia ? h`<p class="tenue chico">${Datos.textos.donde}</p>` : h`<div class="dato"><span>${Datos.textos.donde}</span>${Lector.textos.consulta ? h`<span>${Lector.textos.consulta}</span>` : ''}
@@ -4526,14 +4757,46 @@ const Cerca = (() => {
     },
 
     // Cargar una promo de la zona: en qué comercio, qué descuento, qué días y con qué medio de pago.
+    // ¿Qué cocino?: primero qué se busca; después, las ideas de la IA.
+    cocina(H) {
+      const err = H.error ? h`<p class="error" role="alert">${H.error}</p>` : '';
+      if (H.paso !== 'ideas') {
+        return marco('¿Qué cocino?', h`<div class="hoja-cuerpo">
+          <p class="tenue chico">Con lo que hay en tu alacena, la inteligencia artificial te propone tres comidas y te dice qué falta comprar. Solo se le envía la lista de productos.</p>
+          <div class="campo"><span id="ck-que-r">Qué buscás</span><div class="chips" role="group" aria-labelledby="ck-que-r">${Object.entries(COMIDAS_TXT).map(([k, t]) => h`<button type="button" class="chip${H.comida === k ? ' puesto' : ''}" data-act="cocina-comida" data-c="${k}" aria-pressed="${H.comida === k ? 'true' : 'false'}">${t}</button>`)}</div></div>
+          ${campoPaso('Para cuántas personas', 'ck-personas', 'personas', H.personas, 1)}
+          ${H.pensando ? cargando('Pensando ideas con lo que tenés…') : ''}${err}
+          <div class="hoja-pie"><button type="button" class="btn" data-act="cerrar">Cancelar</button>
+            <button type="button" class="btn btn-principal" data-act="cocina-pensar"${atr('disabled', H.pensando)}>${H.pensando ? 'Pensando…' : 'Ver ideas'}</button></div></div>`);
+      }
+      const usa = r => r.usa.map(id => verProd(id)).filter(Boolean).map(p => p.nombre).slice(0, 5);
+      return marco('Ideas para cocinar', h`<div class="hoja-cuerpo">
+        <ul class="recetas">${H.recetas.map((r, i) => {
+          const anotada = H.anotadas.includes(i), u = usa(r);
+          return h`<li class="receta"><h3>${r.nombre}</h3>
+            <p class="tenue chico">${[r.minutos ? `~${r.minutos} min` : '', u.length ? `Usa: ${u.join(', ')}` : ''].filter(Boolean).join(' · ')}</p>
+            ${r.faltan.length ? h`<p class="chico">Te falta: <strong>${r.faltan.map(f => f.n).join(', ')}</strong></p>
+              <div class="acciones"><button type="button" class="btn btn-chico${anotada ? '' : ' btn-principal'}" data-act="cocina-faltan" data-i="${i}" data-escribe${atr('disabled', anotada)}>${anotada ? 'Anotado en la lista' : 'Anotar lo que falta'}</button></div>`
+              : h`<p class="chico verde">Tenés todo lo que hace falta.</p>`}
+            <details><summary>Cómo se hace</summary><ol class="pasos">${r.pasos.map(x => h`<li>${x}</li>`)}</ol></details></li>`;
+        })}</ul>
+        <p class="tenue chico">Son ideas de una inteligencia artificial: revisá las cantidades y que la comida quede bien cocida.</p>${err}
+        <div class="hoja-pie"><button type="button" class="btn" data-act="cocina-otras"${atr('disabled', H.pensando)}>${H.pensando ? 'Pensando…' : 'Otras ideas'}</button>
+          <button type="button" class="btn btn-principal" data-act="cerrar">Listo</button></div></div>`);
+    },
+
     promo(H) {
       return marco('Cargar una promo', h`<form class="form" data-form="promo" novalidate>
         <p class="tenue chico">La ven los hogares de tu zona${E.ajustes.alias ? `, como «${E.ajustes.alias}»` : ', sin tu nombre'}. Cargá solo promos que viste en el comercio o en tu banco.</p>
+        ${hayIA() ? h`<div class="ia-foto" aria-live="polite">${H.leyendo ? cargando('La IA está leyendo la foto…') : h`<div class="acciones">
+            <button type="button" class="btn btn-chico${H.aviso ? '' : ' btn-principal'}" data-act="promo-foto">${ico('camara')}${H.aviso ? 'Otra foto' : 'Sacale una foto al cartel'}</button>
+            <button type="button" class="enlace" data-act="promo-galeria">o elegila de la galería</button></div>`}
+          ${H.aviso ? h`<p class="nota gris chico">${H.aviso}</p>` : h`<p class="tenue chico">La inteligencia artificial completa los datos y vos los revisás. Solo se envía la foto: que no salgan personas ni datos tuyos.</p>`}</div>` : ''}
         ${campoComercio('pr-comercio', 'comercio', H.comercio || '', 'En qué comercio')}
         ${campo('Qué promo es', h`<input type="text" id="pr-texto" data-k="texto" value="${H.texto}" maxlength="120" autocomplete="off" placeholder="25 % en todo, tope $ 10.000 por semana">`)}
         <div class="dos">
           ${campo('Descuento (%)', h`<input type="text" id="pr-pct" data-k="pct" value="${H.pct}" inputmode="numeric" autocomplete="off" placeholder="Opcional">`)}
-          ${campo('Con qué se paga', h`<select id="pr-medio" data-k="medio">${opciones(PROMO_MEDIOS.map(m => [m, m]), H.medio)}</select>`)}
+          ${campo('Con qué se paga', h`<select id="pr-medio" data-k="medio">${opciones((PROMO_MEDIOS.includes(H.medio) ? PROMO_MEDIOS : PROMO_MEDIOS.concat(H.medio)).map(m => [m, m]), H.medio)}</select>`)}
         </div>
         <div class="campo"><span id="pr-dias-r">Qué días <small class="tenue">· sin tildar ninguno: todos los días</small></span>
           <div class="chips" role="group" aria-labelledby="pr-dias-r">${[1, 2, 3, 4, 5, 6, 0].map(d => h`<button type="button" class="chip${H.dias.includes(d) ? ' puesto' : ''}" data-act="promo-dia" data-d="${d}" aria-pressed="${H.dias.includes(d) ? 'true' : 'false'}" aria-label="${DIAS_SEMANA[d]}">${DIAS_CORTOS[d]}</button>`)}</div></div>
@@ -4629,6 +4892,12 @@ const Cerca = (() => {
         <button type="button" class="enlace" data-act="hogar-cerrar">Cerrar sesión</button>
         <button type="button" class="enlace rojo" data-act="hogar-salir">Salir de este hogar</button>
         <button type="button" class="enlace rojo" data-act="hogar-borrar-cuenta">Borrar mi cuenta</button></div>`}</div>`;
+  }
+  // Dentro de Ajustes: si este teléfono usa la IA. Es de cada persona, no del hogar.
+  function bloqueIA() {
+    return h`<div class="dato"><p class="rotulo">Inteligencia artificial</p>
+      <label class="casilla"><input type="checkbox" id="aj-ia" data-cambio="ia"${atr('checked', iaElegida())}>
+        <span>Usar la IA en este teléfono <small class="tenue">· para leer fotos de promos y proponer comidas. Es Gemini, de Google: solo se le envía la foto del cartel o la lista de productos de tu alacena, nunca tu nombre, tu email ni tus tickets. Google puede usar lo que recibe para mejorar sus servicios.</small></span></label></div>`;
   }
   // Dentro de Ajustes: si este hogar comparte sus precios con la zona, con qué nombre, y la ubicación que recuerda este teléfono.
   function bloqueZona() {
@@ -5176,6 +5445,106 @@ const Cerca = (() => {
         : !ref ? 'Para que ese precio les sirva a otros hogares, ubicá el comercio en el mapa (el botón del pin).'
           : E.ajustes.compartir !== true ? 'Tu hogar no comparte precios con la zona: se cambia en Ajustes. Como el producto no está en tu alacena, el precio no se guardó.'
             : 'No se pudo anotar el precio. Probá de nuevo.' });
+  }
+
+  /* La foto de una promo: la IA la lee y completa la hoja; la persona revisa y la carga. */
+  function comercioParecido(nombre) {
+    const k = N.norm(nombre);
+    if (!k) return '';
+    const ns = Object.values(E.ajustes.comercios || {}).map(c => c.n).filter(Boolean);
+    const igual = ns.find(n => N.norm(n) === k);
+    if (igual) return igual;
+    const empieza = ns.filter(n => N.norm(n).startsWith(k + ' ') || k.startsWith(N.norm(n) + ' '));
+    return empieza.length === 1 ? empieza[0] : '';
+  }
+  async function fotoPromo(archivo) {
+    const H = E.hoja;
+    if (!H || H.tipo !== 'promo' || H.leyendo || !hayIA() || !archivo) return;
+    cambiarHoja({ leyendo: true, error: '' });
+    let r = null, falla = null;
+    try {
+      let foto;
+      try { const im = await Imagen.abrir(archivo); try { foto = await Imagen.aBlob(Imagen.lienzo(im, 1600), 0.85); } finally { im.cerrar(); } }
+      catch (e) { throw { code: 'imagen' }; }
+      r = await IA.promo(foto, PROMO_MEDIOS, N.hoyISO());
+    } catch (e) { falla = e; }
+    if (E.hoja !== H) return;
+    H.leyendo = false;
+    if (falla || !r) { const t = IA.nota(falla); if (t) errorHoja(t); else renderHoja(); return; }
+    if (!r.esPromo) { errorHoja('En esa foto no se ve una promo. Probá con otra, más cerca del cartel.'); return; }
+    const c = { texto: r.texto, pct: r.pct ? String(r.pct) : '', medio: r.medio, dias: r.dias, error: '' };
+    if (r.hasta) c.hasta = r.hasta;
+    let dice = '';
+    if (r.comercio) {
+      const n = comercioParecido(r.comercio);
+      if (n) c.comercio = n;
+      else if (!refDeComercio(limpio(H.comercio))) { dice = r.comercio; c.comercio = r.comercio; }
+    }
+    c.aviso = 'Listo: la IA completó la promo. Revisá que esté bien antes de cargarla.'
+      + (dice ? ` Ubicá «${dice}» en el mapa con el botón del pin.` : '') + (r.dudas ? ` Ojo: ${r.dudas}` : '');
+    cambiarHoja(c);
+  }
+
+  /* ¿Qué cocino?: la IA propone comidas con lo que hay y se anota en la lista lo que falta. */
+  const COMIDAS_TXT = { comida: 'Almuerzo o cena', rapido: 'Algo rápido', dulce: 'Dulce o merienda', vianda: 'Vianda' };
+  const PRIMERO_COCINA = ['frescos', 'carnes', 'lacteos', 'panaderia', 'congelados'];
+  function listaParaCocinar() {
+    const orden = c => { const i = PRIMERO_COCINA.indexOf(c); return i < 0 ? 9 : i; };
+    return V.prods.filter(([, p]) => !p.ejemplo && +p.stock > 0)
+      .map(([id, p]) => ({ id, texto: [p.nombre, p.marca, p.presentacion].filter(Boolean).join(' ').slice(0, 90), cant: String(Math.round(+p.stock)), cat: N.CATS[catDe(p)] || 'otros', o: orden(catDe(p)) }))
+      .sort((a, b) => a.o - b.o).slice(0, 120);
+  }
+  async function pensarRecetas(otras) {
+    const H = E.hoja;
+    if (!H || H.tipo !== 'cocina' || H.pensando || !hayIA()) return;
+    const personas = Math.min(20, entero(H.personas, 4, 1) || 4), lista = listaParaCocinar();
+    if (!lista.length) return errorHoja('No hay nada en la alacena todavía: cargá algunos productos y probá de nuevo.');
+    H.pensando = true; H.error = ''; H.personas = String(personas);
+    renderHoja();
+    let r = null, falla = null;
+    try { r = await IA.recetas(lista, { comida: H.comida, personas, anteriores: otras ? H.vistas : [] }); } catch (e) { falla = e; }
+    if (E.hoja !== H) return;
+    H.pensando = false;
+    if (falla || !r || !r.length) { const t = falla ? IA.nota(falla) : 'La IA no encontró ideas con lo que hay. Probá de nuevo o elegí otra cosa.'; if (t) errorHoja(t); else renderHoja(); return; }
+    try { localStorage.setItem('libreta.personas', String(personas)); } catch (e) { /* no importa */ }
+    cambiarHoja({ paso: 'ideas', recetas: r, anotadas: [], error: '', vistas: H.vistas.concat(r.map(x => x.nombre)).slice(-12) });
+  }
+  // El producto de la alacena que corresponde a un ingrediente: el mismo nombre, o uno que empieza igual («Tomate» → «Tomate perita»).
+  function productoParecido(nombre) {
+    const k = N.norm(nombre);
+    if (!k) return null;
+    let mejor = null;
+    for (const [id, p] of V.prods) {
+      if (p.ejemplo) continue;
+      const n = N.norm(p.nombre);
+      if (n === k) return id;
+      if (!mejor && (n.startsWith(k + ' ') || k.startsWith(n + ' '))) mejor = id;
+    }
+    return mejor;
+  }
+  async function anotarFaltantes(i) {
+    const H = E.hoja, r = H && H.tipo === 'cocina' ? H.recetas[i] : null;
+    if (!r || H.anotadas.includes(i) || !puede()) return;
+    H.anotadas = H.anotadas.concat(i);
+    renderHoja();
+    const hoy = hoyDia();
+    let n = 0, falla = null;
+    for (const f of r.faltan) {
+      try {
+        const id = productoParecido(f.n);
+        if (id) {
+          const p = E.prod.get(id);
+          if (p && !N.analizar(p, hoy, E.ajustes.frecuencia).pedido) {
+            E.prod.set(id, { ...p, pedido: hoy });
+            await enCola(id, () => escribir(() => E.db.doc('productos/' + id).update({ pedido: hoy })));
+          }
+        } else await crearProducto({ nombre: f.n, categoria: f.cat, stock: 0, pedido: hoy });
+        n++;
+      } catch (e) { falla = e; }
+    }
+    pintar();
+    if (falla) falloGuardar(falla);
+    else avisar(`${n === 1 ? 'Quedó anotada 1 cosa' : `Quedaron anotadas ${n} cosas`} en la lista de compras`, { rotulo: 'Ver', fn: () => { cerrarHoja(); irA('compras'); } });
   }
 
   async function guardarPromo() {
@@ -5761,6 +6130,24 @@ const Cerca = (() => {
       const fin = new Date(); fin.setMonth(fin.getMonth() + 1, 0);
       abrirHoja({ tipo: 'promo', comercio: ultimoComercio(), texto: '', pct: '', medio: PROMO_MEDIOS[0], dias: [], hasta: N.hoyISO(fin), error: '', ocupado: false });
     },
+    'promo-foto'() { if (E.hoja && E.hoja.tipo === 'promo' && !E.hoja.leyendo) elegir(dedoGrueso() ? 'in-promo-cam' : 'in-promo-gal'); },
+    'promo-galeria'() { if (E.hoja && E.hoja.tipo === 'promo' && !E.hoja.leyendo) elegir('in-promo-gal'); },
+    // ¿Qué cocino?
+    cocina() {
+      if (!hayIA()) return;
+      let personas = 4;
+      try { personas = entero(localStorage.getItem('libreta.personas'), 4, 1) || 4; } catch (e) { /* queda 4 */ }
+      abrirHoja({ tipo: 'cocina', paso: 'elegir', comida: 'comida', personas: String(personas), recetas: [], vistas: [], anotadas: [], pensando: false, error: '' });
+    },
+    'cocina-comida'(el) {
+      const H = E.hoja;
+      if (!H || H.tipo !== 'cocina' || H.pensando) return;
+      H.comida = el.dataset.c;
+      for (const b of $$('#hoja [data-act="cocina-comida"]')) { const si = b === el; b.classList.toggle('puesto', si); b.setAttribute('aria-pressed', si ? 'true' : 'false'); }
+    },
+    'cocina-pensar'() { pensarRecetas(false); },
+    'cocina-otras'() { pensarRecetas(true); },
+    'cocina-faltan'(el) { anotarFaltantes(+el.dataset.i); },
     'promo-dia'(el) {
       const H = E.hoja, d = +el.dataset.d;
       if (!H || H.tipo !== 'promo') return;
@@ -6152,6 +6539,12 @@ const Cerca = (() => {
   });
   document.addEventListener('change', e => {
     const el = e.target;
+    if (el.dataset && el.dataset.cambio === 'ia') {      // usar o no la IA: vale para este teléfono
+      try { if (el.checked) localStorage.removeItem(CLAVE_IA); else localStorage.setItem(CLAVE_IA, 'no'); } catch (x) { /* sin almacenamiento */ }
+      pintar();
+      avisar(el.checked ? 'La IA queda encendida en este teléfono' : 'La IA queda apagada en este teléfono');
+      return;
+    }
     if (el.dataset && el.dataset.cambio === 'compartir') {      // compartir o no los precios con la zona: vale para todo el hogar
       if (!puede()) { el.checked = !el.checked; return; }
       const si = el.checked;
@@ -6198,6 +6591,7 @@ const Cerca = (() => {
   alElegir('in-prod-gal', alProducto);
   alElegir('in-tic-cam', fs => fotoTicket(fs));
   alElegir('in-tic-gal', fs => fotoTicket(fs));
+  if (document.getElementById('in-promo-cam')) { alElegir('in-promo-cam', fs => fotoPromo(fs[0])); alElegir('in-promo-gal', fs => fotoPromo(fs[0])); }
   if (document.getElementById('in-copia')) alElegir('in-copia', async fs => {
     const H = E.hoja;
     if (!H || H.tipo !== 'ajustes' || !Datos.copia) return;

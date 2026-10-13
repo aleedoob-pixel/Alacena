@@ -77,6 +77,9 @@
   <h3>Los comercios que marcan los hogares</h3>
   <p>Si un comercio no figura en el mapa, cualquier hogar lo puede marcar: se guarda su <strong>nombre</strong>, <strong>dónde queda</strong> y el rubro, para que lo vean los hogares de la zona. No dice quién lo marcó. Marcá solo comercios, nunca una casa particular.</p>
 
+  <h3>La inteligencia artificial (optativa)</h3>
+  <p>Dos funciones usan <strong>Gemini</strong>, la inteligencia artificial de Google, solo cuando las tocás: leer la foto de un cartel de promo («Sacale una foto al cartel») y proponer comidas («¿Qué cocino?»). En el primer caso se envía <strong>la foto</strong>; en el segundo, <strong>la lista de productos de tu alacena</strong> (nombre, marca, cuántos hay y su categoría). Nunca tu nombre, tu email, tu ubicación ni tus tickets. Como la libreta usa la versión gratuita, <strong>Google puede guardar y usar lo que recibe para mejorar sus servicios, y personas de Google pueden revisarlo</strong>: no le saques fotos a personas ni a datos tuyos. Lo que contesta la IA se te muestra para que lo revises antes de guardar nada. Se apaga en Ajustes → «Usar la IA en este teléfono».</p>
+
   <h3>Para qué se usan</h3>
   <p>Para que la libreta funcione: mostrarte tu alacena, armar la lista de compras, calcular cuánto subió cada cosa y avisarte dónde otros hogares consiguieron más barato. <strong>No hay publicidad, no se arman perfiles y no se venden ni se ceden datos.</strong></p>
 
@@ -87,12 +90,13 @@
     <li>pedirle al servidor de la libreta los precios compartidos de tu zona (se le envía en qué cuadros del mapa estás, de unos 10 km de lado, no el punto exacto).</li>
   </ul>
   <p>Tu ubicación no se guarda en tu hogar ni la ve ninguna otra persona. Queda en tu teléfono, y la borrás cuando quieras en Ajustes → «Olvidarla». Sin dar la ubicación la libreta anda igual: los comercios se anotan a mano o se marcan en el mapa.</p>
-  <p>La <strong>cámara</strong> se usa para leer códigos de barras y para sacarle una foto a un ticket. El código se lee en el teléfono; las imágenes no salen de él.</p>
+  <p>La <strong>cámara</strong> se usa para leer códigos de barras y para sacarle una foto a un ticket. El código se lee en el teléfono y las fotos de los tickets no salen de él. La única foto que sale del teléfono es la de un cartel de promo, y solo si elegís que la lea la inteligencia artificial (ver arriba).</p>
 
   <h2 id="terceros">Con quién se comparten</h2>
   <p>Con nadie, salvo los servicios que hacen falta para que la libreta funcione:</p>
   <table>
     <tr><th>Google Firebase</th><td>Guarda las cuentas (Firebase Authentication) y los datos de los hogares y los precios compartidos (Cloud Firestore), en servidores de Google.</td></tr>
+    <tr><th>Google Gemini (Firebase AI Logic) y reCAPTCHA</th><td>Gemini lee las fotos de promos y propone comidas, solo cuando usás esas funciones (ver «La inteligencia artificial»). reCAPTCHA, de Google, comprueba en segundo plano que los pedidos a Gemini salen de la libreta y no de otro lado; para eso mira cómo se usa la página, según la <a href="https://policies.google.com/privacy" target="_blank" rel="noopener">política de privacidad de Google</a>.</td></tr>
     <tr><th>Photon (Komoot) y Overpass</th><td>Buscan comercios en los datos de OpenStreetMap. Reciben un punto aproximado, lo que escribís al buscar un comercio por su nombre y, a veces, cuál es el comercio del que hace falta la dirección.</td></tr>
     <tr><th>Precios oficiales (SEPA)</th><td>Los precios que publican los supermercados por ley, tomados de los datos abiertos del Estado argentino y preparados todos los días en GitHub. Para mostrarlos, el teléfono pide a GitHub los de su zona (un cuadro de unos 10 km); no se envía nada tuyo.</td></tr>
     <tr><th>OpenFreeMap y jsDelivr</th><td>Entregan las imágenes del mapa y la biblioteca que lo dibuja. Como cualquier sitio web, ven la dirección IP de tu conexión y qué parte del mapa mirás.</td></tr>

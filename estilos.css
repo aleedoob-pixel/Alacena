@@ -555,3 +555,14 @@ a.promo-hoy { display: block; margin: 0 0 10px; color: inherit; text-decoration:
   .giro { animation: none; border-top-color: var(--linea); border-right-color: var(--birome); }
   .hoja-modal, .visor-guia::after { animation: none; }
 }
+
+/* La IA: la foto de una promo y las ideas para cocinar */
+.ia-foto { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1.5px dashed var(--linea); border-radius: var(--radio); background: var(--hundido); }
+.ia-foto .acciones { align-items: center; }
+.ia-foto .cargando { margin: 0; }
+.recetas { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.receta { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border: 1.5px solid var(--linea); border-radius: var(--radio); background: var(--hoja); }
+.receta h3 { margin: 0; font-size: 17px; line-height: 1.25; }
+.receta p { margin: 0; }
+.receta details summary { cursor: pointer; font-weight: 600; font-size: 14.5px; padding: 6px 0; }
+.receta .pasos { margin: 4px 0 0; padding-left: 22px; display: flex; flex-direction: column; gap: 6px; font-size: 15px; line-height: 1.45; }

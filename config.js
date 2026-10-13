@@ -29,6 +29,17 @@ const mapasLibres = true;
    y quedan en la rama «datos» del repositorio. Va la dirección de esa carpeta; vacío, no se usan. */
 const preciosOficiales = "https://raw.githubusercontent.com/aleedoob-pixel/Alacena/datos/sepa/";
 
+/* Inteligencia artificial (optativo): Gemini, de Google, a través de Firebase AI Logic.
+
+   Lee fotos de carteles de promos y propone comidas con lo que hay en la alacena. Se activa en la consola de
+   Firebase (AI Logic, con la «Gemini Developer API», sin costo) y pide App Check: la clave de sitio de
+   reCAPTCHA (Fraud Defense) registrada en App Check va en «recaptcha». Vacía, la IA no aparece. */
+const inteligencia = {
+  recaptcha: "6Ld-Au0tAAAAADa5utL1m79uLn37vTZxeDSZ8iUJ",
+  modelo: "gemini-3.5-flash",
+  respaldo: "gemini-3.5-flash-lite"
+};
+
 /* Aportes voluntarios (optativo).
 
    Si ponés un link de pago de Mercado Pago o tu alias, Ajustes invita a apoyar la libreta con un aporte.
