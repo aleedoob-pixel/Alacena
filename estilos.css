@@ -193,6 +193,9 @@ a.btn { text-decoration: none; }
 .segmentos { display: inline-flex; border: 1.5px solid var(--tinta); border-radius: var(--radio); overflow: hidden; }
 .segmentos button { min-height: 40px; padding: 0 14px; border: 0; border-left: 1.5px solid var(--tinta); background: var(--hoja); font: 600 15px/1 var(--f-ui); cursor: pointer; }
 .segmentos button:first-child { border-left: 0; }
+/* cada cuánto se compra: cinco opciones, en todo el ancho */
+.segmentos.frec { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); width: 100%; }
+.segmentos.frec button { padding: 0 2px; font-size: 13.5px; letter-spacing: -.01em; }
 .segmentos button[aria-pressed="true"] { background: var(--tinta); color: var(--papel); }
 .compra { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 3px 12px; align-items: start; padding: 12px 14px; border-top: 1px solid var(--cuadro); cursor: pointer; }
 .grupo > .compra:first-child { border-top: 0; }

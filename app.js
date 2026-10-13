@@ -567,6 +567,18 @@ const Nucleo = (() => {
   /* ---------- consumo y compras sugeridas ---------- */
   const VENTANA = 56;      // días de historia que cuentan para el ritmo
   const MARGEN = 2;        // días de colchón sobre la frecuencia de compra
+  const FRECUENCIAS = [1, 3, 7, 15, 30];                     // cada cuánto se hacen las compras: a diario … una vez por mes
+  /* Lo que se compra en el día a día (el pan, las frutas y verduras, o lo que el hogar marque): aunque la casa haga
+     una compra grande por mes, de eso se lleva para un par de días. `p.diario`: true / false lo decide el hogar;
+     sin decidir, va según la categoría. */
+  const DIA_A_DIA = ['frescos', 'panaderia'];
+  const diarioPorCategoria = cat => DIA_A_DIA.includes(cat);
+  const esDiario = p => (p.diario === true || p.diario === false ? p.diario : diarioPorCategoria(p.categoria));
+  // Para cuántos días conviene tener: la frecuencia de compra (o un par de días, si es del día a día) más un colchón.
+  function horizonteDe(p, frec) {
+    const f = esDiario(p) ? Math.min(frec, 2) : frec;
+    return f + (f <= 3 ? 1 : MARGEN);
+  }
   const mediana = a => { if (!a.length) return 0; const s = a.slice().sort((x, y) => x - y); return s[Math.floor((s.length - 1) / 2)]; };
 
   /* Devuelve cómo viene un producto:
@@ -602,7 +614,7 @@ const Nucleo = (() => {
         stockEf = stock <= 0 ? 0 : Math.max(0, ult[1] - ritmo * (hoy - ult[0]));
       }
     }
-    const horizonte = frec + MARGEN;
+    const horizonte = horizonteDe(p, frec);
     const dias = ritmo > 0 ? stockEf / ritmo : Infinity;
     let motivo = null, cant = 0;
     if (p.reponer !== false) {
@@ -617,7 +629,7 @@ const Nucleo = (() => {
       cant = Math.max(1, cant);
     }
     const urgencia = motivo === 'agotado' ? -1 : motivo === 'aviso' && !(ritmo > 0) ? 1000 + stock : dias;
-    return { modo, ritmo, dias, stock, stockEf, aviso, motivo, cant, cadaDias, diasUltCompra: ult ? hoy - ult[0] : null, urgencia };
+    return { modo, ritmo, dias, stock, stockEf, aviso, motivo, cant, cadaDias, diasUltCompra: ult ? hoy - ult[0] : null, urgencia, diario: esDiario(p) };
   }
 
   const n1 = x => (x >= 9.95 ? nf0.format(x) : nf1.format(x));
@@ -716,7 +728,7 @@ const Nucleo = (() => {
     hoyISO, isoDe, fechaValida, diaDe, isoDeDia, mesDe, sumarMes, diasDelMes, soloMes, nombreMes, mesCorto, fechaCorta, fechaLarga, diaSemana,
     plata, plataCorta, num, aNumero, campoPlata, redondear2,
     norm, parecido, textoProducto, buscarParecido, mayuscula, plural,
-    precios, aplicarMovs, quitarPrecio, analizar, ritmoTexto, alcanzaTexto, razon, situacion, listaCompras,
+    precios, aplicarMovs, quitarPrecio, analizar, FRECUENCIAS, esDiario, diarioPorCategoria, horizonteDe, ritmoTexto, alcanzaTexto, razon, situacion, listaCompras,
     repartoTicket, totalesPorMes, gastoHasta, porCategoria, escala,
   };
 })();
@@ -2326,7 +2338,8 @@ const Cerca = (() => {
   const ESTILO = window.LIBRETA_ESTILO || 'https://tiles.openfreemap.org/styles/liberty';
   const MAPLIBRE = window.LIBRETA_MAPLIBRE || 'https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl';
   const DIA = 864e5;
-  const RADIO_CERCA = 1500;        // metros: hasta dónde se buscan comercios para elegir
+  const RADIO_CERCA = 40000;       // metros: hasta dónde se buscan comercios para elegir (en la ciudad salen los de unas cuadras;
+                                   // en el campo, los del pueblo de al lado)
   const RADIO_NOMBRE = 30000;      // metros: hasta dónde sirve un comercio buscado por su nombre
   const RADIO_ZONA = 4000;         // metros: hasta dónde interesan los precios de otros hogares
   const PASO_OSM = 0.005;          // los cercanos se guardan por cuadros de media centésima de grado (~500 m)
@@ -2410,6 +2423,8 @@ const Cerca = (() => {
     cheese: 'Quesería', frozen_food: 'Congelados', seafood: 'Pescadería', spices: 'Especias', confectionery: 'Golosinas', chemist: 'Perfumería', wholesale: 'Mayorista', farm: 'Granja',
     pet: 'Mascotas', kiosk: 'Kiosco', food: 'Alimentos', coffee: 'Café', tea: 'Té', organic: 'Orgánicos', nuts: 'Frutos secos', water: 'Agua', pharmacy: 'Farmacia', marketplace: 'Mercado' };
   const FILTRO = SHOP.map(t => 'osm_tag=shop:' + t).concat(AMENITY.map(t => 'osm_tag=amenity:' + t)).join('&');
+  // los grandes (súper, hiper, mayoristas): se buscan aparte, para que en la ciudad no los tapen los kioscos de la cuadra
+  const FILTRO_GRANDES = ['supermarket', 'wholesale', 'department_store'].map(t => 'osm_tag=shop:' + t).join('&');
   const n6 = x => Math.round(x * 1e6) / 1e6;
   async function pedirJson(url, op, ms) {
     const ctl = typeof AbortController === 'function' ? new AbortController() : null, reloj = setTimeout(() => ctl && ctl.abort(), ms || 15000);
@@ -2435,7 +2450,7 @@ const Cerca = (() => {
     const rubro = RUBROS[t.shop] || RUBROS[t.amenity] || 'Comercio', calle = [t['addr:street'], t['addr:housenumber']].filter(Boolean).join(' ');
     return { id: `osm:${el.type[0]}${el.id}`, nombre: String(t.name || t.brand || rubro).slice(0, 80), direccion: calle.slice(0, 120), rubro, lat, lon };
   }
-  // Los comercios más cercanos a un punto (hasta 50, a 1,5 km), guardados por cuadro para no pedirlos de nuevo.
+  // Los comercios más cercanos a un punto (hasta 50 de todo tipo y 30 grandes, a 40 km), guardados por cuadro para no pedirlos de nuevo.
   const CLAVE_OSM = 'libreta.osm';
   const pidiendo = new Map();
   function delCuadro(pos) {
@@ -2446,8 +2461,13 @@ const Cerca = (() => {
     }
     if (pidiendo.has(k)) return pidiendo.get(k);
     const lat = n6((cy + 0.5) * PASO_OSM - 90), lon = n6((cx + 0.5) * PASO_OSM - 180);      // el centro del cuadro: no el punto exacto del teléfono
-    const p = pedirJson(`${PHOTON}/reverse?lat=${lat}&lon=${lon}&radius=${(RADIO_CERCA + 400) / 1000}&limit=50&lang=default&${FILTRO}`).then(j => {
-      const l = ((j && j.features) || []).map(dePhoton).filter(Boolean).map(conocer);
+    const pedir = (filtro, cuantos) => pedirJson(`${PHOTON}/reverse?lat=${lat}&lon=${lon}&radius=${(RADIO_CERCA + 400) / 1000}&limit=${cuantos}&lang=default&${filtro}`);
+    const p = Promise.all([pedir(FILTRO, 50), pedir(FILTRO_GRANDES, 30).catch(() => null)]).then(([j, g]) => {
+      const vistos = new Set(), l = [];
+      for (const f of ((j && j.features) || []).concat((g && g.features) || [])) {
+        const x = dePhoton(f);
+        if (x && !vistos.has(x.id)) { vistos.add(x.id); l.push(conocer(x)); }
+      }
       const todos = leer(CLAVE_OSM, {}), o = esObjeto(todos) ? todos : {};
       o[k] = { t: Date.now(), l: l.map(x => [x.id, x.nombre, x.direccion, x.rubro, x.lat, x.lon]) };
       for (const v of Object.keys(o).sort((a, b) => o[b].t - o[a].t).slice(8)) delete o[v];       // se guardan los últimos 8 cuadros
@@ -2488,7 +2508,7 @@ const Cerca = (() => {
       if (dist <= RADIO_CERCA) lista.push(Object.assign({ dist }, l));
     }
     lista.sort((a, b) => a.dist - b.dist);
-    ultCerca = { pos, t: Date.now(), lista: lista.slice(0, 40) };
+    ultCerca = { pos, t: Date.now(), lista: lista.slice(0, 60) };
     return ultCerca.lista;
   }
   // Para comparar nombres sin mayúsculas ni tildes.
@@ -2914,6 +2934,7 @@ const Cerca = (() => {
       log: stock > 0 && dia > hd - 200 && dia <= hd + 1 ? [[dia, 0, stock]] : [], creado: new Date().toISOString(),
     };
     if (d.marcaFija) doc.marcaFija = true;
+    if (d.diario === true || d.diario === false) doc.diario = d.diario;
     const ref = E.db.collection('productos').doc();
     await escribir(() => ref.set(doc));
     if (!E.prod.has(ref.id)) E.prod.set(ref.id, doc);
@@ -3261,7 +3282,7 @@ const Cerca = (() => {
       comercios[k] = A.puntoValido(c.la, c.lo) ? { n: c.n, la: c.la, lo: c.lo } : { n: c.n };      // dónde queda: es un comercio, no una casa
     }
     return {
-      frecuencia: [7, 15, 30].includes(d.frecuencia) ? d.frecuencia : 7, presupuesto: +d.presupuesto > 0 ? +d.presupuesto : 0,
+      frecuencia: N.FRECUENCIAS.includes(d.frecuencia) ? d.frecuencia : 7, presupuesto: +d.presupuesto > 0 ? +d.presupuesto : 0,
       compartir: d.compartir === true ? true : d.compartir === false ? false : null, comercios,
       alias: typeof d.alias === 'string' ? d.alias.slice(0, 40) : '',
     };
@@ -3311,6 +3332,10 @@ const Cerca = (() => {
   }
   const precioDe = (valor, comercio, fecha) => { const n = limpio(comercio).slice(0, 60), o = { valor, comercio: n, ref: refDeComercio(n) }; if (fecha) o.fecha = fecha; return o; };
   const conMapa = () => !!(C && C.conMapa());
+  // Cada cuánto se hacen las compras: cómo se dice en los botones y hasta cuándo alcanza lo que se lleva.
+  const FREC_BOTON = { 1: 'A diario', 3: '2–3 días', 7: 'Semana', 15: 'Quincena', 30: 'Mes' };
+  const FREC_HASTA = { 1: 'hoy y mañana', 3: 'los próximos días', 7: 'la semana', 15: 'la quincena', 30: 'el mes' };
+  const botonesFrec = (act, actual) => N.FRECUENCIAS.map(d => h`<button type="button" data-act="${act}" data-frec="${d}" aria-pressed="${String(actual === d)}">${FREC_BOTON[d]}</button>`);
   /* ---------- aportes voluntarios ----------
      Si config.js trae `aportes` (un link de pago de Mercado Pago y/o un alias), Ajustes invita a apoyar la libreta.
      Dentro de la app de Google Play no se muestra: ahí los pagos tienen sus propias reglas. */
@@ -3742,17 +3767,17 @@ const Cerca = (() => {
     for (const b of $$('#co-frec button')) b.setAttribute('aria-pressed', String(+b.dataset.frec === frec));
     const enLista = new Set(compras.map(x => x.id));
     for (const id of [...E.marcados]) if (!enLista.has(id) && E.prodListo) E.marcados.delete(id);
-    $('#co-resumen').textContent = compras.length ? `${compras.length} ${N.plural(compras.length, 'producto', 'productos')} para llegar a la próxima compra` : '';
+    $('#co-resumen').textContent = compras.length ? `${compras.length} ${N.plural(compras.length, 'producto', 'productos')} para ${FREC_HASTA[frec] || 'la próxima compra'}` : '';
     const caja = $('#co-lista');
     if (!compras.length) {
       caja.innerHTML = val(h`${V.prods.length
-        ? h`<div class="vacio"><h3>No hace falta comprar nada</h3><p>Con lo que hay en la alacena alcanza para los próximos ${frec} días. A medida que se vaya usando, acá aparece qué reponer y cuánto.</p></div>`
+        ? h`<div class="vacio"><h3>No hace falta comprar nada</h3><p>Con lo que hay en la alacena alcanza para ${FREC_HASTA[frec] || `los próximos ${frec} días`}. A medida que se vaya usando, acá aparece qué reponer y cuánto.</p></div>`
         : h`<div class="vacio">${E.conexion === 'esperando' ? cargando('Cargando lo guardado…') : ''}<h3>Acá aparece qué comprar</h3>
           <p>La lista se arma sola con lo que se terminó o está por terminarse, y sugiere cuánto llevar según el ritmo de consumo de la casa.</p></div>`}${bloqueNotas()}`);
       return;
     }
     let marcados = 0;
-    const filas = compras.map(x => {
+    const fila = x => {
       const p = x.p, m = E.marcados.has(x.id), meta = [p.marca, p.presentacion].filter(Boolean).join(' · '), c = ((pl && pl.porId.get(x.id)) || [])[0];
       if (m) marcados++;
       return h`<label class="compra${m ? ' marcada' : ''}">
@@ -3763,10 +3788,15 @@ const Cerca = (() => {
         ${x.costo != null ? h`<span class="compra-costo">≈ ${N.plata(x.costo, true)}</span>` : ''}
         ${c ? h`<span class="compra-consejo ${c.tipo}">${c.texto}</span>` : ''}
       </label>`;
-    });
+    };
+    // Con compras grandes (semanal o más), lo del día a día va aparte: se compra en el almacén o la verdulería de la vuelta.
+    const diarias = frec > 3 ? compras.filter(x => x.a.diario) : [], grandes = frec > 3 ? compras.filter(x => !x.a.diario) : compras;
+    const filas = !diarias.length ? h`<div class="grupo">${compras.map(fila)}</div>`
+      : h`<section class="grupo"><h2 class="grupo-t"><span>Del día a día</span><span>${diarias.length}</span></h2>${diarias.map(fila)}</section>
+        ${grandes.length ? h`<section class="grupo"><h2 class="grupo-t"><span>Para ${FREC_HASTA[frec]}</span><span>${grandes.length}</span></h2>${grandes.map(fila)}</section>` : ''}`;
     const total = pl ? pl.total : 0, sinPrecio = pl ? pl.sinPrecio : 0;
     caja.innerHTML = val(h`<p class="tenue chico">Tildá lo que vayas poniendo en el changuito.</p>
-      <div class="grupo">${filas}</div>
+      ${filas}
       ${bloquePlan()}
       <div class="pie-compras">
         <p class="estimado">${total > 0 ? h`<span>Estimado</span><strong>${N.plata(total, true)}</strong>` : ''}
@@ -4034,6 +4064,7 @@ const Cerca = (() => {
         <small class="nota-precio" id="p-nota" data-nota-de="p-precio" data-prod="${H.id || ''}">${H.id && H.f0 && f.precio !== H.f0.precio ? notaPrecio(H.id, f.precio) : ''}</small>
         ${campoComercio('p-comercio', 'f.comercio', f.comercio)}
         <label class="casilla"><input type="checkbox" id="p-reponer" data-k="f.reponer"${atr('checked', f.reponer)}><span>Recomendar la compra cuando falte</span></label>
+        <label class="casilla"><input type="checkbox" id="p-diario" data-k="f.diario"${atr('checked', f.diario)}><span>Lo compro en el día a día <small class="tenue">· se sugiere para un par de días, no para toda la compra grande</small></span></label>
         <label class="casilla"><input type="checkbox" id="p-marca-fija" data-k="f.marcaFija"${atr('checked', f.marcaFija)}><span>Prefiero esta marca <small class="tenue">· no sugerirme otras más baratas</small></span></label>
         ${dato}
         ${par ? h`<div class="nota"><p>Ya hay uno parecido en la alacena: <strong>${N.textoProducto(par)}</strong> (${par.stock} en stock).</p>
@@ -4197,8 +4228,8 @@ const Cerca = (() => {
     ajustes(H) {
       return marco('Ajustes', h`<form class="form" data-form="ajustes" novalidate>
         <div class="campo"><span id="aj-frec-r">¿Cada cuánto hacés las compras?</span>
-          <div class="segmentos" role="group" aria-labelledby="aj-frec-r">${[7, 15, 30].map(d => h`<button type="button" data-act="aj-frecuencia" data-frec="${d}" aria-pressed="${String(H.frecuencia === d)}">${d} días</button>`)}</div>
-          <small>La lista de compras sugiere lo necesario para llegar hasta la próxima compra.</small></div>
+          <div class="segmentos frec" role="group" aria-labelledby="aj-frec-r">${botonesFrec('aj-frecuencia', H.frecuencia)}</div>
+          <small>La lista de compras sugiere lo necesario hasta la próxima compra. El pan, las frutas y verduras y lo que marques como «del día a día» se sugieren para un par de días, aunque compres una vez por mes.</small></div>
         ${campo('Presupuesto mensual', h`<input type="text" id="aj-presupuesto" data-k="presupuesto" value="${H.presupuesto}" inputmode="decimal" autocomplete="off" placeholder="Opcional">`, 'En Gastos se ve cuánto queda del presupuesto cada mes.')}
         ${H.error ? h`<p class="error" role="alert">${H.error}</p>` : ''}
         <div class="hoja-pie" data-escribe><button type="submit" class="btn btn-principal">Guardar</button></div>
@@ -4537,7 +4568,7 @@ const Cerca = (() => {
     partes.push(h`<section><h3 class="rotulo">Cerca tuyo</h3>
       ${S.estadoCerca === 'buscando' ? cargando('Buscando comercios cerca…')
         : S.estadoCerca === 'listo' ? (S.cerca.length ? h`<ul class="lugares">${S.cerca.map((l, i) => filaLugar(l, i, 'cerca'))}</ul>`
-          : h`<p class="tenue chico">El mapa no muestra comercios de comida a menos de 1,5 km. Buscalo por su nombre o marcalo en el mapa.</p>`)
+          : h`<p class="tenue chico">El mapa no muestra comercios de comida a menos de 40 km. Buscalo por su nombre o marcalo en el mapa.</p>`)
           : h`${S.notaCerca ? h`<p class="nota gris">${S.notaCerca}</p>` : ''}
             <div class="acciones"><button type="button" class="btn btn-chico" data-act="comercio-cerca">${ico('aca')}${S.estadoCerca === 'error' ? 'Probar de nuevo' : 'Buscar comercios cerca mío'}</button></div>`}</section>`);
     partes.push(h`<section class="marcar"><h3 class="rotulo">¿No está?</h3>
@@ -4761,6 +4792,7 @@ const Cerca = (() => {
       nombre: d.nombre || '', marca: d.marca || '', presentacion: d.presentacion || '', categoria: d.categoria || 'almacen', codigo: d.codigo || '',
       stock: String(d.stock == null ? 1 : d.stock), aviso: String(d.aviso || 0), reponer: d.reponer !== false, precio: d.precio > 0 ? N.campoPlata(d.precio) : '',
       comercio: ult ? ult[2] : nuevo ? ultimoComercio() : '', marcaFija: !!d.marcaFija,
+      diario: N.esDiario({ categoria: d.categoria || 'almacen', diario: d.diario }), diarioTocado: d.diario === true || d.diario === false,
     };
   }
   const conocido = (id, extra) => { pintarComercios(); cambiarHoja({ estado: 'conocido', id, cant: '1', precio: '', comercio: ultimoComercio(), error: '', codigoNuevo: '', leido: null, cerca: null, ...extra }); };
@@ -5018,6 +5050,7 @@ const Cerca = (() => {
     if (codigo && !Barras.gtinValido(codigo)) return errorHoja('Ese código de barras no cierra: revisá los dígitos o dejalo vacío.', 'p-codigo');
     const stock = entero(f.stock, 0), comercio = limpio(f.comercio).slice(0, 60);
     const datos = { nombre, marca: limpio(f.marca), presentacion: limpio(f.presentacion), categoria: N.CATS_ALACENA.includes(f.categoria) ? f.categoria : 'otros', codigo, aviso: entero(f.aviso, 0), reponer: !!f.reponer, marcaFija: !!f.marcaFija };
+    datos.diario = !!f.diario === N.diarioPorCategoria(datos.categoria) ? null : !!f.diario;      // solo se guarda si no es lo de su categoría
     if (H.id) {
       ocupar(true);
       const id = H.id;
@@ -5714,6 +5747,12 @@ const Cerca = (() => {
     if (k.startsWith('sub.')) { if (el.id === 'lc-buscar') sugerirComercios(); return; }      // la hoja de encima: buscar un comercio
     E.hoja.sucio = true;
     if (E.hoja.tipo === 'ticket') ticketVivo();
+    if (el.id === 'p-diario' && E.hoja.f) E.hoja.f.diarioTocado = true;
+    if (el.id === 'p-categoria' && E.hoja.f && !E.hoja.f.diarioTocado) {
+      E.hoja.f.diario = N.diarioPorCategoria(el.value);
+      const c = $('#p-diario');
+      if (c) c.checked = E.hoja.f.diario;
+    }
     // lo que se pone al día mientras se escribe: cuánto cambió el precio, si el comercio está ubicado, el total de la compra
     const nota = el.id ? $(`#hoja [data-nota-de="${el.id}"]`) : null;
     if (nota) nota.textContent = notaPrecio(nota.dataset.prod, el.value);
