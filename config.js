@@ -36,8 +36,9 @@ const preciosOficiales = "https://raw.githubusercontent.com/aleedoob-pixel/Alace
    reCAPTCHA (Fraud Defense) registrada en App Check va en «recaptcha». Vacía, la IA no aparece. */
 const inteligencia = {
   recaptcha: "6Ld-Au0tAAAAADa5utL1m79uLn37vTZxeDSZ8iUJ",
-  modelo: "gemini-3.5-flash",
-  respaldo: "gemini-3.5-flash-lite"
+  modelo: "gemini-3.5-flash",          // para leer fotos
+  respaldo: "gemini-3.5-flash-lite",   // si el anterior está saturado
+  rapido: "gemini-3.1-flash-lite"      // para las comidas: contesta en segundos
 };
 
 /* Aportes voluntarios (optativo).

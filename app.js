@@ -2300,7 +2300,11 @@ const IA = (() => {
   const N = Nucleo;
   let cfg = {};
   try { if (typeof inteligencia === 'object' && inteligencia) cfg = inteligencia; } catch (e) { /* config.js sin la IA */ }
-  const MODELOS = [cfg.modelo || 'gemini-3.5-flash', cfg.respaldo || 'gemini-3.5-flash-lite'].filter((m, i, l) => m && l.indexOf(m) === i);
+  /* Los modelos, en orden de preferencia: para leer fotos, el más capaz primero; para las comidas (solo texto), el
+     más rápido. Si uno está saturado, sin cuota o tarda, se prueba con el siguiente. */
+  const sinRepetir = l => l.filter((m, i) => m && l.indexOf(m) === i);
+  const PARA_FOTOS = sinRepetir([cfg.modelo || 'gemini-3.5-flash', cfg.respaldo || 'gemini-3.5-flash-lite', cfg.rapido || 'gemini-3.1-flash-lite']);
+  const PARA_TEXTO = sinRepetir([cfg.rapido || 'gemini-3.1-flash-lite', cfg.respaldo || 'gemini-3.5-flash-lite', cfg.modelo || 'gemini-3.5-flash']);
   const configurada = () => cfg.activa !== false && !!cfg.recaptcha;
   let apagada = '';          // por qué no anda en esta visita (la cuota de hoy, App Check), si se supo
 
@@ -2318,7 +2322,8 @@ const IA = (() => {
         try { ac.initializeAppCheck(app, { provider: new ac.ReCaptchaEnterpriseProvider(cfg.recaptcha), isTokenAutoRefreshEnabled: false }); }
         catch (e) { if (!/already|ya/i.test(String(e && e.message))) throw e; }
         const backend = ai.getAI(app, { backend: new ai.GoogleAIBackend() });
-        return MODELOS.map(m => ai.getGenerativeModel(backend, { model: m, generationConfig: { responseMimeType: 'application/json', temperature: 0.4 } }));
+        const modelo = m => ai.getGenerativeModel(backend, { model: m, generationConfig: { responseMimeType: 'application/json', temperature: 0.4 } });
+        return { fotos: PARA_FOTOS.map(modelo), texto: PARA_TEXTO.map(modelo) };
       })();
       motor.catch(() => { motor = null; });
     }
@@ -2352,19 +2357,18 @@ const IA = (() => {
     return btoa(s);
   }
   /* Un pedido: la consigna y, si hay, una foto. Si un modelo está saturado, sin cuota o tarda demasiado, prueba
-     con el otro. `liviano`: empieza por el de respaldo, más rápido (para las comidas, donde no hay foto que leer). */
-  async function pedir(consigna, foto, signal, liviano) {
+     con el siguiente. */
+  async function pedir(consigna, foto, signal) {
     if (navigator.onLine === false) throw { code: 'sin-red' };
     if (signal && signal.aborted) throw { code: 'cancelado' };
-    let modelos = await conTope(cargar(), 25000);
-    if (liviano) modelos = modelos.slice().reverse();
+    const todos = await conTope(cargar(), 25000), modelos = foto ? todos.fotos : todos.texto;
     const partes = [{ text: consigna }];
     if (foto) partes.push({ inlineData: { mimeType: foto.type || 'image/jpeg', data: await blob64(foto) } });
     const cancelar = new Promise((_, mal) => { if (signal) signal.addEventListener('abort', () => mal({ code: 'cancelado' })); });
     let ultimo = null;
     for (const m of modelos) {
       try {
-        const r = await Promise.race([conTope(m.generateContent(partes), 45000), cancelar]);
+        const r = await Promise.race([conTope(m.generateContent(partes), foto ? 40000 : 25000), cancelar]);
         apagada = '';
         return leerJSON(r.response.text());
       } catch (e) {
@@ -2478,7 +2482,7 @@ ${lista.map((x, i) => `${i + 1}. ${x.texto} · ${x.cant} · ${x.cat}`).join('\n'
     // Propone comidas. `lista`: lo que hay en la alacena [{ id, texto, cant, cat }], lo fresco primero.
     async recetas(lista, opciones) {
       const o = Object.assign({ comida: 'comida', personas: 4, anteriores: [] }, opciones || {});
-      const r = await pedir(promptRecetas(lista, o), null, o.signal, true);
+      const r = await pedir(promptRecetas(lista, o), null, o.signal);
       return normalizarRecetas(r, lista);
     },
     // Qué decirle a la persona cuando algo falla.
