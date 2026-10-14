@@ -2316,7 +2316,7 @@ const Datos = (() => {
       sinConexion: 'No se pudo abrir la conexión con el servidor. Revisá internet y recargá la página.',
       donde: 'Los datos de este hogar se guardan en Firebase, un servicio de Google, y los ven solo sus integrantes. Cada teléfono guarda una copia para seguir andando sin conexión. Las fotos de los tickets quedan en el teléfono donde se cargaron.',
       fallo: 'No se pudo guardar. Revisá la conexión y probá de nuevo.',
-      version: 'Libreta del hogar · versión 2.5.0 (2026-10-14)',       // el número y la fecha los pone armar.js
+      version: 'Libreta del hogar · versión 2.6.0 (2026-10-14)',       // el número y la fecha los pone armar.js
     },
     /* Devuelve { db, permiso } si en este teléfono ya hay una cuenta con su hogar. Si no, { puerta, alEntrar }:
        la app muestra la entrada y `alEntrar` se cumple cuando se entra a un hogar. null: sin conexión. */
@@ -2478,12 +2478,14 @@ No inventes nada que no esté en la foto.`;
     return `Sos el lector de productos de una libreta de compras que comparten familias de Argentina. La foto muestra algo que se compró o se está por comprar, casi siempre sin envase de marca ni código de barras: comida de rotisería o de panadería, fruta, verdura, carne, fiambre, algo suelto o hecho en el negocio.
 
 Respondé SOLO con un objeto JSON, con esta forma:
-{"esProducto": true, "nombre": "", "categoria": "", "precio": 0}
+{"esProducto": true, "nombre": "", "categoria": "", "vende": "unidad", "partes": [], "precio": 0}
 
 - esProducto: false si en la foto no se ve nada que se compre.
 - nombre: qué es, corto y genérico, como lo pediría una persona en el negocio, de hasta 40 caracteres. Sin marca, salvo que se lea en una etiqueta. Ejemplos: "Pizza de muzzarella con morrón", "Pan francés", "Banana", "Milanesa de nalga", "Empanada de carne".
 - categoria: una de estas claves: ${N.CATS_ALACENA.join(', ')}.
-- precio: si en la foto se ve un cartel o una etiqueta con el precio de ese producto, el número (con punto decimal, sin símbolo); si no, 0.
+- vende: "kilo" si se vende por peso y el precio es por kilo (carne, pollo, fiambre, queso, verdura y fruta sueltas); "combo" si es una oferta que junta varias cosas por un solo precio (por ejemplo «3 kg de pata muslo + 2 kg de milanesa»); si no, "unidad".
+- partes: solo para un combo, qué trae: [{"n": "Pata muslo", "q": 3, "u": "kg"}, {"n": "Milanesa", "q": 2, "u": "kg"}]. "u" es "kg" o "u" (unidades). Si no es combo, [].
+- precio: si en la foto se ve un cartel o una etiqueta con el precio de ese producto (o del combo), el número (con punto decimal, sin símbolo); si no, 0.
 
 No inventes nada que no se vea en la foto.`;
   }
@@ -2492,7 +2494,10 @@ No inventes nada que no se vea en la foto.`;
     const nombre = N.mayuscula(texto(r.nombre, 60));
     let precio = N.aNumero(r.precio);
     if (!isFinite(precio) || precio <= 0 || precio > 1e8) precio = 0;
-    return { esProducto: r.esProducto !== false && nombre.length >= 2, nombre, categoria: N.CATS_ALACENA.includes(r.categoria) ? r.categoria : 'otros', precio: N.redondear2(precio) };
+    const partes = (Array.isArray(r.partes) ? r.partes : []).slice(0, 8).map(c => ({ n: N.mayuscula(texto(c && c.n, 40)), q: N.aNumero(c && c.q), u: c && /^k/i.test(String(c.u)) ? 'kg' : 'u' }))
+      .filter(c => c.n.length >= 2 && c.q > 0 && c.q < 1000);
+    const vende = r.vende === 'combo' && partes.length >= 2 ? 'combo' : r.vende === 'kilo' ? 'kilo' : 'unidad';
+    return { esProducto: r.esProducto !== false && nombre.length >= 2, nombre, categoria: N.CATS_ALACENA.includes(r.categoria) ? r.categoria : 'otros', vende, partes: vende === 'combo' ? partes : [], precio: N.redondear2(precio) };
   }
 
   /* ---------- qué cocinar ---------- */
@@ -3409,6 +3414,7 @@ const Cerca = (() => {
     if (d.marcaFija) doc.marcaFija = true;
     if (d.pedido > 0) doc.pedido = d.pedido;
     if (d.suelto) doc.suelto = true;
+    if (d.porKg) doc.porKg = true;
     if (d.diario === true || d.diario === false) doc.diario = d.diario;
     const ref = E.db.collection('productos').doc();
     await escribir(() => ref.set(doc));
@@ -3989,13 +3995,15 @@ const Cerca = (() => {
     for (const w of ws) { if ((k ? k.length + 1 : 0) + w.length > 40) break; k += (k ? '-' : '') + w; }
     return k.length >= 2 ? 'n-' + k : '';
   }
-  const textoSuelto = p => [p.nombre, p.marca, p.presentacion].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim().slice(0, 60);
+  const textoSuelto = p => [p.nombre, p.marca, p.porKg ? '' : p.presentacion].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim().slice(0, 60);
+  // Lo que se vende por kilo lleva «-xkg» en la clave: su precio es el del kilo y solo se compara con otros por kilo.
+  function claveSuelto(texto, porKg) { const k = claveNombre(texto); return k && porKg ? k.slice(0, 38).replace(/-+$/, '') + '-xkg' : k; }
   const conBarras = p => !!(p && p.codigo && Barras.gtinValido(String(p.codigo).replace(/\D/g, '')));
-  const codigoDe = p => (conBarras(p) ? Barras.canonico(p.codigo) : p && p.suelto && p.nombre ? claveNombre(textoSuelto(p)) : '');
+  const codigoDe = p => (conBarras(p) ? Barras.canonico(p.codigo) : p && p.suelto && p.nombre ? claveSuelto(textoSuelto(p), !!p.porKg) : '');
   // El producto de la alacena, sin código de barras, que corresponde a esa clave (o null).
   function productoSuelto(clave) {
     if (!clave) return null;
-    for (const [id, p] of V.prods) if (!p.ejemplo && !conBarras(p) && (claveNombre(textoSuelto(p)) === clave || claveNombre(p.nombre) === clave)) return id;
+    for (const [id, p] of V.prods) if (!p.ejemplo && !conBarras(p) && (claveSuelto(textoSuelto(p), !!p.porKg) === clave || claveSuelto(p.nombre, !!p.porKg) === clave)) return id;
     return null;
   }
   // ¿Ese precio de la zona lo cargó este mismo hogar? Es suyo si está en su historial: el mismo comercio, el mismo día, el mismo precio.
@@ -4039,7 +4047,7 @@ const Cerca = (() => {
     const hoy = hoyDia(), dia = fechaISO && N.fechaValida(fechaISO) ? N.diaDe(fechaISO) : hoy;
     if (dia < hoy - 3 || dia > hoy) return null;                       // una compra vieja no es novedad para la zona
     const ref = refDeComercio(comercio), con = [];
-    for (const it of items) { const p = E.prod.get(it.id), codigo = codigoDe(p); if (p && !p.ejemplo && codigo && it.precio > 0) con.push({ id: it.id, nombre: p.nombre, codigo, precio: N.redondear2(it.precio), cant: it.cant || 1, reco: recoDe(p), texto: textoSuelto(p), cat: catDe(p) }); }
+    for (const it of items) { const p = E.prod.get(it.id), codigo = codigoDe(p); if (p && !p.ejemplo && codigo && it.precio > 0) con.push({ id: it.id, nombre: p.nombre, codigo, precio: N.redondear2(it.precio), cant: it.cant || 1, reco: recoDe(p), texto: p.porKg ? `${textoSuelto(p).slice(0, 50)} (por kg)` : textoSuelto(p), cat: catDe(p) }); }
     if (!con.length) return null;
     const out = { baratos: [], compartidos: 0, preguntar: false, ref, porId: new Map(), ahorro: 0 };
     if (ref && E.ajustes.compartir === true) {
@@ -5690,31 +5698,122 @@ const Cerca = (() => {
               : d.hayZona ? h`<li><span class="tenue">Todavía nadie cargó este producto cerca. ¡Sé el primero!</span></li>` : ''}`;
   }
   // Un precio de algo sin código de barras: qué es (lo puede decir la IA con una foto), cuánto sale y dónde.
+  /* ---------- lo que no tiene código: por unidad, por kilo o en combo ----------
+     Por kilo, el precio es el del kilo y en la alacena se cuentan kilos; la clave para la zona lleva «-xkg», así un
+     precio por kilo solo se compara con otros por kilo. Un combo («3 kg de pata muslo + 2 kg de milanesa») se comparte
+     como tal, en la alacena se suman sus partes y se compara con lo que costarían sueltas cerca. */
+  const VENDE = [['unidad', 'Unidad'], ['kilo', 'Kilo'], ['combo', 'Combo']];
+  const UNIDADES_COMBO = [['kg', 'kg'], ['u', 'unidades']];
+  const cantTexto = (q, u) => (u === 'kg' ? `${N.num(q)} kg` : `${N.num(q)} ${N.plural(q, 'unidad', 'unidades')}`);
+  // Las partes de un combo escritas de corrido: «Combo 3kpata muslo 2k milanesa» → [3 kg pata muslo, 2 kg milanesa].
+  function partesCombo(texto) {
+    const t = String(texto || '').replace(/^\s*combo\s*/i, ' ').replace(/[+,;y]\s/gi, m => m.replace(/[+,;]/, ' '));
+    const re = /(\d+(?:[.,]\d+)?)\s*(kg|kgs|kilos?|k|u|un|unid(?:ades)?|x)?\.?\s*(?:de\s+)?([a-záéíóúñü][a-záéíóúñü ]*?)(?=\s*(?:\d|\+|$))/gi, out = [];
+    let m;
+    while ((m = re.exec(t)) && out.length < 8) {
+      const q = N.aNumero(m[1].replace(',', '.')), n = m[3].replace(/\s+y\s*$/i, '').trim();
+      if (q > 0 && n.length >= 2) out.push({ n: N.mayuscula(n), q: String(q), u: /^k/i.test(m[2] || '') ? 'kg' : 'u' });
+    }
+    return out;
+  }
+  const partesValidas = l => (l || []).map(c => ({ n: N.mayuscula(limpio(c.n).slice(0, 40)), q: N.aNumero(String(c.q).replace(',', '.')), u: c.u === 'kg' ? 'kg' : 'u' })).filter(c => c.n.length >= 2 && c.q > 0 && c.q < 1000);
+  const textoCombo = l => ('Combo: ' + l.map(c => `${cantTexto(c.q, c.u)} de ${c.n.toLowerCase()}`).join(' + ')).slice(0, 60);
+  // Lo que cada parte del combo costaría suelta cerca (lo más barato de la zona) y la cuenta contra el precio del combo.
+  function cuentaCombo(H) {
+    const partes = partesValidas(H.comps), precio = N.aNumero(limpio(H.precio));
+    if (partes.length < 2 || !H.cmpZona) return null;
+    const con = [], faltan = [];
+    let suma = 0;
+    for (const c of partes) {
+      const l = (H.cmpZona.get(claveSuelto(c.n, c.u === 'kg')) || []).filter(o => !o.propio);
+      if (!l.length) { faltan.push(c); continue; }
+      const o = l[0], sub = N.redondear2(o.precio * c.q);
+      suma += sub; con.push({ c, o, sub });
+    }
+    return { con, faltan, suma: N.redondear2(suma), precio: precio > 0 ? precio : 0 };
+  }
+  function vistaCuentaCombo(H) {
+    if (H.vende !== 'combo') return '';
+    const k = cuentaCombo(H);
+    if (!k) return H.cmpBuscando ? cargando('Mirando cuánto salen sueltos cerca…') : '';
+    const lineas = k.con.map(x => h`<li><span>${cantTexto(x.c.q, x.c.u)} de ${x.c.n.toLowerCase()}</span><strong>${N.plata(x.sub)}</strong>
+      <small>${N.plata(x.o.precio)} ${x.c.u === 'kg' ? 'el kilo' : 'cada una'} en ${nombreDeRef(x.o.k) || x.o.comercio || 'un comercio cerca'}</small></li>`);
+    let veredicto = '';
+    if (!k.con.length) veredicto = h`<p class="tenue chico">Para saber si conviene hace falta el precio suelto cerca de: ${k.faltan.map(c => c.n.toLowerCase()).join(', ')}${k.faltan.some(c => c.u === 'kg') ? ' (por kilo)' : ''}. Cuando algún hogar lo avise, te lo digo.</p>`;
+    else if (k.faltan.length) veredicto = h`<p class="tenue chico">Falta el precio suelto de: ${k.faltan.map(c => c.n.toLowerCase()).join(', ')}. Con lo que se sabe, por separado sale al menos ${N.plata(k.suma)}.</p>`;
+    else if (k.precio > 0) {
+      const dif = N.redondear2(k.suma - k.precio), pct = Math.round(Math.abs(dif) / k.suma * 100);
+      veredicto = dif > 0 ? h`<p class="gondola-veredicto verde">Conviene: por separado sale ${N.plata(k.suma)}. El combo te ahorra ${N.plata(dif)} (${pct} %).</p>`
+        : dif < 0 ? h`<p class="gondola-veredicto rojo">No conviene: por separado sale ${N.plata(k.suma)}, ${N.plata(-dif)} menos (${pct} %).</p>`
+          : h`<p class="gondola-veredicto">Da lo mismo que comprarlo por separado (${N.plata(k.suma)}).</p>`;
+    } else veredicto = h`<p class="tenue chico">Por separado, cerca, sale ${N.plata(k.suma)}. Escribí el precio del combo y te digo si conviene.</p>`;
+    return h`<div class="combo-cuenta">${k.con.length ? h`<ul class="gondola-datos">${lineas}</ul>` : ''}${veredicto}</div>`;
+  }
+  function pintarCuentaCombo(H) { const el = $('#s-combo-cuenta'); if (el) el.innerHTML = val(vistaCuentaCombo(H)); }
+  // Busca cerca el precio suelto de cada parte del combo (cuando cambian las partes).
+  async function buscarPartesCombo(H) {
+    const partes = partesValidas(H.comps), claves = partes.map(c => claveSuelto(c.n, c.u === 'kg')).filter(Boolean), firma = claves.join('|');
+    if (firma === H.cmpFirma) return;
+    H.cmpFirma = firma; H.cmpZona = null;
+    if (partes.length < 2 || !puedeCerca()) { pintarCuentaCombo(H); return; }
+    H.cmpBuscando = true; pintarCuentaCombo(H);
+    let pos = C.ultimaPosicion();
+    if (!pos) { try { pos = await C.posicion(true); } catch (e) { pos = null; } }
+    let m = new Map();
+    if (pos) { try { m = await C.buscar(pos, claves); } catch (e) { m = new Map(); } }
+    if (E.hoja !== H || H.cmpFirma !== firma) return;
+    H.cmpBuscando = false; H.cmpZona = m;
+    pintarCuentaCombo(H);
+  }
   function vistaSuelto(H) {
-    const d = datosGondola(H), hoy = hoyDia(), ver = veredictoGondola(H);
+    const d = datosGondola(H), hoy = hoyDia(), ver = veredictoGondola(H), combo = H.vende === 'combo', kilo = H.vende === 'kilo';
     const hayFilas = !!H.clave && !!(d.ult || d.mejor || d.hayZona || H.estadoZona === 'buscando' || H.estadoZona === 'sin-ubicacion');
     return marco(H.avisar ? 'Avisar un precio' : 'Precio sin código', h`<form class="form" data-form="suelto" novalidate>
       ${H.avisar ? h`<p class="tenue chico">Lo ven al instante los hogares de tu zona, en el mapa${E.ajustes.alias ? `, como «${E.ajustes.alias}»` : ', sin tu nombre'}. ¿Tiene código de barras? <button type="button" class="enlace" data-act="gondola">Escanealo</button></p>` : ''}
       ${hayIA() ? h`<div class="ia-foto" aria-live="polite">${H.leyendo ? cargando('La IA está mirando la foto…') : h`<div class="acciones">
           <button type="button" class="btn btn-chico${H.aviso ? '' : ' btn-principal'}" data-act="suelto-foto">${ico('camara')}${H.aviso ? 'Otra foto' : 'Sacale una foto'}</button>
           <button type="button" class="enlace" data-act="suelto-galeria">o elegila de la galería</button></div>`}
-        ${H.aviso ? h`<p class="nota gris chico">${H.aviso}</p>` : h`<p class="tenue chico">La inteligencia artificial te dice qué es (y el precio, si se ve el cartel). Solo se envía la foto.</p>`}</div>`
+        ${H.aviso ? h`<p class="nota gris chico">${H.aviso}</p>` : h`<p class="tenue chico">La inteligencia artificial te dice qué es, si va por kilo o es un combo (y el precio, si se ve el cartel). Solo se envía la foto.</p>`}</div>`
         : h`<p class="tenue chico">Para lo que no tiene código de barras: pan, fruta, verdura, carne, comida de rotisería…</p>`}
-      ${campo('Qué es', h`<input type="text" id="s-nombre" data-k="nombre" data-suelto value="${H.nombre}" maxlength="60" autocomplete="off" list="lista-sueltos" placeholder="Pizza de muzzarella">`,
-        H.id ? 'Ya está en tu alacena.' : 'Un nombre corto y común: así lo encuentran los otros hogares.')}
-      ${hayFilas ? h`<ul class="gondola-datos">${filasGondola(H, d, hoy)}</ul>` : ''}
-      ${campo('Precio', h`<input type="text" id="g-precio" data-k="precio" value="${H.precio}" inputmode="decimal" autocomplete="off" placeholder="$">`)}
-      <p class="gondola-veredicto ${ver.tono}" id="g-veredicto" aria-live="polite">${ver.texto}</p>
+      ${campo(combo ? 'Cómo se llama el combo' : 'Qué es', h`<input type="text" id="s-nombre" data-k="nombre" data-suelto value="${H.nombre}" maxlength="60" autocomplete="off" list="lista-sueltos" placeholder="${combo ? 'Combo 3 kg pata muslo + 2 kg milanesa' : 'Pizza de muzzarella'}">`,
+        combo ? '' : H.id ? 'Ya está en tu alacena.' : 'Un nombre corto y común: así lo encuentran los otros hogares.')}
+      <div class="campo"><span id="s-vende-r">Se vende por</span><div class="segmentos" role="group" aria-labelledby="s-vende-r">${VENDE.map(([v, t]) => h`<button type="button" data-act="suelto-vende" data-v="${v}" aria-pressed="${H.vende === v ? 'true' : 'false'}">${t}</button>`)}</div></div>
+      ${combo ? h`<div class="campo"><span>Qué trae</span><ul class="partes">${H.comps.map((c, i) => h`<li>
+          <input type="text" id="s-q-${i}" data-k="comps.${i}.q" data-combo value="${c.q}" inputmode="decimal" autocomplete="off" aria-label="Cantidad" placeholder="3">
+          <select id="s-u-${i}" data-k="comps.${i}.u" data-combo aria-label="Unidad">${opciones(UNIDADES_COMBO, c.u)}</select>
+          <input type="text" id="s-n-${i}" data-k="comps.${i}.n" data-combo value="${c.n}" maxlength="40" autocomplete="off" aria-label="Qué" placeholder="Pata muslo">
+          <button type="button" class="icono-btn" data-act="suelto-parte-quitar" data-i="${i}" aria-label="Quitar">${ico('x')}</button></li>`)}</ul>
+          <button type="button" class="enlace" data-act="suelto-parte">${ico('mas')}Agregar otra cosa</button></div>
+        <div id="s-combo-cuenta" aria-live="polite">${vistaCuentaCombo(H)}</div>` : ''}
+      ${!combo && hayFilas ? h`<ul class="gondola-datos">${filasGondola(H, d, hoy)}</ul>` : ''}
+      <div class="dos">
+        ${campo(combo ? 'Precio del combo' : kilo ? 'Precio por kilo' : 'Precio', h`<input type="text" id="g-precio" data-k="precio" value="${H.precio}" inputmode="decimal" autocomplete="off" placeholder="$">`)}
+        ${kilo ? campo('Cuántos kilos llevás', h`<input type="text" id="s-kilos" data-k="kilos" value="${H.kilos}" inputmode="decimal" autocomplete="off" placeholder="1">`) : ''}
+      </div>
+      ${combo ? '' : h`<p class="gondola-veredicto ${ver.tono}" id="g-veredicto" aria-live="polite">${ver.texto}</p>`}
       ${campoComercio('g-comercio', 'comercio', H.comercio || '', 'Dónde estás')}
       ${H.error ? h`<p class="error" role="alert">${H.error}</p>` : ''}
       <div class="hoja-pie"><button type="submit" class="btn"${atr('disabled', H.ocupado || H.leyendo)}>Solo anotar el precio</button>
         <button type="button" class="btn btn-principal" data-act="suelto-llevo"${atr('disabled', H.ocupado || H.leyendo)}>Lo llevo</button></div></form>`);
   }
+  // La clave de la zona según cómo se vende.
+  function claveDeSuelto(H) {
+    if (H.vende === 'combo') { const l = partesValidas(H.comps); return l.length >= 2 ? claveNombre(textoCombo(l)) : ''; }
+    return claveSuelto(H.nombre, H.vende === 'kilo');
+  }
   // Con el nombre puesto: si ya está en la alacena y qué precios hay cerca.
   async function actualizarSuelto(H) {
-    const clave = claveNombre(H.nombre);
-    if (clave === H.clave) return;
-    H.clave = clave; H.id = productoSuelto(clave); H.zona = null;
+    if (H.vende !== 'combo' && /^\s*combo\b/i.test(H.nombre || '') && !H.vendeElegido) {      // «Combo 3k pata muslo…»: es un combo
+      const l = partesCombo(H.nombre);
+      if (l.length >= 2) { H.vende = 'combo'; H.comps = l; }
+    } else if (H.vende === 'combo' && !partesValidas(H.comps).length) {
+      const l = partesCombo(H.nombre);
+      if (l.length) H.comps = l;
+    }
+    if (H.vende === 'combo') buscarPartesCombo(H);
+    const clave = claveDeSuelto(H);
+    if (clave === H.clave) { renderHoja(); return; }
+    H.clave = clave; H.id = H.vende === 'combo' ? null : productoSuelto(clave); H.zona = null;
     if (H.id) H.cat = catDe(E.prod.get(H.id));
     H.estadoZona = clave && puedeCerca() ? 'buscando' : 'sin';
     renderHoja();
@@ -5749,31 +5848,63 @@ const Cerca = (() => {
     H.leyendo = false;
     if (falla || !r) { const t = IA.nota(falla); if (t) errorHoja(t); else renderHoja(); return; }
     if (!r.esProducto) { errorHoja('En esa foto no se ve qué es. Probá con otra o escribilo.'); return; }
-    H.nombre = r.nombre; H.cat = r.categoria;
+    H.nombre = r.nombre; H.cat = r.categoria; H.vende = r.vende; H.vendeElegido = true;
+    if (r.vende === 'combo') H.comps = r.partes.map(c => ({ n: c.n, q: String(c.q), u: c.u }));
     if (r.precio > 0 && !limpio(H.precio)) H.precio = N.plata(r.precio).replace(/^\$\s*/, '');
-    H.aviso = `La IA dice que es «${r.nombre}»${r.precio > 0 ? ` y que sale ${N.plata(r.precio)}` : ''}. Corregilo si hace falta.`;
-    H.clave = null;
+    H.aviso = `La IA dice que es «${r.nombre}»${r.vende === 'kilo' ? ', por kilo' : r.vende === 'combo' ? `, un combo con ${r.partes.map(c => `${cantTexto(c.q, c.u)} de ${c.n.toLowerCase()}`).join(' y ')}` : ''}${r.precio > 0 ? ` y que sale ${N.plata(r.precio)}` : ''}. Corregilo si hace falta.`;
+    H.clave = null; H.cmpFirma = null;
     await actualizarSuelto(H);
   }
   async function guardarSuelto(llevo) {
     const H = E.hoja;
     if (!H || H.estado !== 'suelto' || H.ocupado || H.leyendo || !puede()) return;
-    const nombre = N.mayuscula(limpio(H.nombre).slice(0, 60)), clave = claveNombre(nombre);
+    const combo = H.vende === 'combo', kilo = H.vende === 'kilo', partes = combo ? partesValidas(H.comps) : [];
+    const nombre = combo ? (N.mayuscula(limpio(H.nombre).slice(0, 60)) || textoCombo(partes)) : N.mayuscula(limpio(H.nombre).slice(0, 60));
+    const clave = claveDeSuelto(H), texto = combo ? textoCombo(partes) : kilo ? `${nombre.slice(0, 50)} (por kg)` : nombre;
     const txt = limpio(H.precio), precio = txt ? N.aNumero(txt) : 0, comercio = limpio(H.comercio).slice(0, 60);
+    const kilos = kilo ? (limpio(H.kilos) ? N.aNumero(String(H.kilos).replace(',', '.')) : 1) : 1;
+    if (combo && partes.length < 2) return errorHoja('Poné al menos dos cosas que trae el combo, con su cantidad: por ejemplo 3 kg de pata muslo y 2 kg de milanesa.', 's-q-0');
     if (!clave) return errorHoja('Escribí qué es: por ejemplo «Pizza de muzzarella».', 's-nombre');
     if (!(precio > 0)) return errorHoja(txt ? 'El precio no se entiende. Escribilo así: 1.450,50' : 'Escribí cuánto sale.', 'g-precio');
+    if (kilo && llevo && !(kilos > 0 && kilos < 1000)) return errorHoja('¿Cuántos kilos llevás? Por ejemplo 1,5', 's-kilos');
     if (H.avisar && !refDeComercio(comercio)) return errorHoja(comercio ? 'Ubicá ese comercio en el mapa (el botón del pin): así el precio aparece donde corresponde.' : 'Elegí en qué comercio está (el botón del pin).', 'g-comercio');
     if (H.avisar && E.ajustes.compartir === false) return errorHoja('Tu hogar eligió no compartir precios con la zona. Se cambia en Ajustes → «Compartir los precios que anoto».');
     if (H.avisar && E.ajustes.compartir == null) { try { await cambiarAjustes({ compartir: true }); } catch (e) { return errorHoja(textoFallo(e)); } }
     ocupar(true);
-    let id = H.id && E.prod.has(H.id) && claveNombre(textoSuelto(E.prod.get(H.id))) === clave ? H.id : productoSuelto(clave);
+    const ref = refDeComercio(comercio);
+    // un combo: en la alacena se suman sus partes (sin precio: no se sabe cuánto vale cada una); a la zona va el combo
+    if (combo) {
+      const sumadas = [];
+      try {
+        if (llevo) {
+          for (const c of partes) {
+            const kc = claveSuelto(c.n, c.u === 'kg'), cant = Math.max(1, Math.round(c.q));
+            const id = productoSuelto(kc);
+            if (id) { if (await mover(id, { c: cant }, null, true)) sumadas.push(c); }
+            else { await crearProducto({ nombre: c.n, categoria: H.cat === 'otros' ? 'carnes' : H.cat, stock: cant, suelto: true, porKg: c.u === 'kg' }); sumadas.push(c); }
+          }
+        }
+      } catch (e) { if (E.hoja === H) errorHoja(textoFallo(e)); else falloGuardar(e); return; }
+      let n = 0;
+      if (ref && E.ajustes.compartir === true && puedeCerca()) { try { n = await C.aportar([{ codigo: clave, precio, reco: 0, texto, cat: H.cat }], ref, hoyDia(), E.ajustes.alias, lugarDe(ref)); } catch (e) { n = 0; } }
+      if (E.hoja !== H) return;
+      if (comercio) recordarComercio(comercio);
+      const k = cuentaCombo(H);
+      const cuenta = k && !k.faltan.length && k.suma > 0 ? (k.suma > precio ? ` Por separado saldría ${N.plata(k.suma)}: te ahorraste ${N.plata(k.suma - precio)}.` : k.suma < precio ? ` Por separado saldría ${N.plata(k.suma)}.` : '') : '';
+      cambiarHoja({ estado: 'hecho', ocupado: false, error: '', fallo: false, sinCodigo: false, cerca: null,
+        texto: (llevo ? `Se ${N.plural(sumadas.length, 'sumó', 'sumaron')} a la alacena: ${sumadas.map(c => `${cantTexto(c.q, c.u)} de ${c.n.toLowerCase()}`).join(' y ')}.` : `Combo anotado: ${N.plata(precio)}${comercio ? ` en ${comercio}` : ''}.`)
+          + (n ? ' Ya lo ven los hogares de tu zona.' : !ref ? ' Para que lo vean otros hogares, ubicá el comercio en el mapa.' : '') + cuenta });
+      return;
+    }
+    let id = H.id && E.prod.has(H.id) && codigoDe({ ...E.prod.get(H.id), suelto: true }) === clave ? H.id : productoSuelto(clave);
+    const cant = kilo ? Math.max(1, Math.round(kilos)) : 1;
     try {
       if (id) {
         const p = E.prod.get(id);
-        if (!p.suelto) { E.prod.set(id, { ...p, suelto: true }); await enCola(id, () => escribir(() => E.db.doc('productos/' + id).update({ suelto: true }))); }
-        if (!await mover(id, { c: llevo ? 1 : 0 }, precioDe(precio, comercio), true)) { if (E.hoja === H) ocupar(false); return; }
+        if (!p.suelto || !!p.porKg !== kilo) { const cambio = { suelto: true, porKg: kilo }; E.prod.set(id, { ...p, ...cambio }); await enCola(id, () => escribir(() => E.db.doc('productos/' + id).update(cambio))); }
+        if (!await mover(id, { c: llevo ? cant : 0 }, precioDe(precio, comercio), true)) { if (E.hoja === H) ocupar(false); return; }
       } else if (llevo) {
-        id = await crearProducto({ nombre, categoria: H.cat, stock: 1, precio, comercio, ref: refDeComercio(comercio), suelto: true });
+        id = await crearProducto({ nombre, categoria: H.cat, stock: cant, precio, comercio, ref, suelto: true, porKg: kilo });
       }
     } catch (e) { if (E.hoja === H) errorHoja(textoFallo(e)); else falloGuardar(e); return; }
     if (E.hoja !== H) return;
@@ -5781,17 +5912,16 @@ const Cerca = (() => {
     if (id) {
       const p = verProd(id) || {};
       cambiarHoja({ estado: 'hecho', ocupado: false, error: '', fallo: false, sinCodigo: false, cerca: null,
-        texto: llevo ? `${p.nombre}: se sumó 1 a la alacena. Ahora hay ${p.stock}.` : `Precio anotado: ${N.plata(precio)}${comercio ? ` en ${comercio}` : ''}.` });
-      trasCompra([{ id, precio, cant: 1 }], comercio).then(r => { if (r && E.hoja === H && H.estado === 'hecho') { H.cerca = r; renderHoja(); } });
+        texto: llevo ? `${p.nombre}: se ${kilo ? `sumaron ${cant} kg` : 'sumó 1'} a la alacena. Ahora hay ${p.stock}${kilo ? ' kg' : ''}.` : `Precio anotado: ${N.plata(precio)}${kilo ? ' el kilo' : ''}${comercio ? ` en ${comercio}` : ''}.` });
+      trasCompra([{ id, precio, cant: llevo ? cant : 1 }], comercio).then(r => { if (r && E.hoja === H && H.estado === 'hecho') { H.cerca = r; renderHoja(); } });
       return;
     }
     // solo el precio de algo que no está en la alacena: sirve para la zona, si el hogar comparte y el comercio está ubicado
-    const ref = refDeComercio(comercio);
     let n = 0;
-    if (ref && E.ajustes.compartir === true && puedeCerca()) { try { n = await C.aportar([{ codigo: clave, precio, reco: 0, texto: nombre, cat: H.cat }], ref, hoyDia(), E.ajustes.alias, lugarDe(ref)); } catch (e) { n = 0; } }
+    if (ref && E.ajustes.compartir === true && puedeCerca()) { try { n = await C.aportar([{ codigo: clave, precio, reco: 0, texto, cat: H.cat }], ref, hoyDia(), E.ajustes.alias, lugarDe(ref)); } catch (e) { n = 0; } }
     if (E.hoja !== H) return;
     cambiarHoja({ estado: 'hecho', ocupado: false, error: '', fallo: false, sinCodigo: false, cerca: null,
-      texto: n ? `Precio anotado: ${nombre}, ${N.plata(precio)} en ${comercio}. Ya lo ven los hogares de tu zona. ¡Gracias!`
+      texto: n ? `Precio anotado: ${nombre}, ${N.plata(precio)}${kilo ? ' el kilo' : ''} en ${comercio}. Ya lo ven los hogares de tu zona. ¡Gracias!`
         : !ref ? 'Para que ese precio les sirva a otros hogares, ubicá el comercio en el mapa (el botón del pin).'
           : E.ajustes.compartir !== true ? 'Tu hogar no comparte precios con la zona: se cambia en Ajustes. Como no está en tu alacena, el precio no se guardó.'
             : 'No se pudo anotar el precio. Probá de nuevo.' });
@@ -6508,18 +6638,28 @@ const Cerca = (() => {
     'avisar-precio'() {
       if (!puede()) return;
       pintarComercios(); pintarSueltos();
-      abrirHoja({ tipo: 'escanear', modo: 'precio', estado: 'suelto', avisar: true, nombre: '', clave: '', cat: 'otros', id: null, precio: '', comercio: ultimoComercio(), zona: null, estadoZona: 'sin', leyendo: false, aviso: '', error: '', ocupado: false, urls: [], ctl: new AbortController() });
+      abrirHoja({ tipo: 'escanear', modo: 'precio', estado: 'suelto', avisar: true, vende: 'unidad', comps: [], kilos: '1', nombre: '', clave: '', cat: 'otros', id: null, precio: '', comercio: ultimoComercio(), zona: null, estadoZona: 'sin', leyendo: false, aviso: '', error: '', ocupado: false, urls: [], ctl: new AbortController() });
     },
     // un precio de algo sin código de barras
     'sin-codigo'() {
       if (!puede()) return;
       pintarComercios(); pintarSueltos();
-      abrirHoja({ tipo: 'escanear', modo: 'precio', estado: 'suelto', nombre: '', clave: '', cat: 'otros', id: null, precio: '', comercio: ultimoComercio(), zona: null, estadoZona: 'sin', leyendo: false, aviso: '', error: '', ocupado: false, urls: [], ctl: new AbortController() });
+      abrirHoja({ tipo: 'escanear', modo: 'precio', estado: 'suelto', vende: 'unidad', comps: [], kilos: '1', nombre: '', clave: '', cat: 'otros', id: null, precio: '', comercio: ultimoComercio(), zona: null, estadoZona: 'sin', leyendo: false, aviso: '', error: '', ocupado: false, urls: [], ctl: new AbortController() });
       if (!hayIA()) { const n = $('#s-nombre'); if (n) n.focus(); }
     },
     'suelto-foto'() { if (E.hoja && E.hoja.estado === 'suelto' && !E.hoja.leyendo) elegir(dedoGrueso() ? 'in-suelto-cam' : 'in-suelto-gal'); },
     'suelto-galeria'() { if (E.hoja && E.hoja.estado === 'suelto' && !E.hoja.leyendo) elegir('in-suelto-gal'); },
     'suelto-llevo'() { guardarSuelto(true); },
+    'suelto-vende'(el) {
+      const H = E.hoja;
+      if (!H || H.estado !== 'suelto' || H.ocupado) return;
+      H.vende = el.dataset.v; H.vendeElegido = true; H.error = '';
+      if (H.vende === 'combo' && !H.comps.length) { const l = partesCombo(H.nombre); H.comps = l.length ? l : [{ n: '', q: '', u: 'kg' }, { n: '', q: '', u: 'kg' }]; }
+      H.clave = null; H.cmpFirma = null;
+      actualizarSuelto(H);
+    },
+    'suelto-parte'() { const H = E.hoja; if (H && H.estado === 'suelto') { H.comps = H.comps.concat({ n: '', q: '', u: 'kg' }); renderHoja(); const n = $(`#s-q-${H.comps.length - 1}`); if (n) n.focus(); } },
+    'suelto-parte-quitar'(el) { const H = E.hoja; if (H && H.estado === 'suelto') { H.comps = H.comps.filter((c, i) => i !== +el.dataset.i); H.clave = null; actualizarSuelto(H); } },
     // «aviso que voy»: una nota para la familia, para que anoten lo que falte
     async 'voy-al-super'() {
       if (!puede() || !Datos.notas) return;
@@ -6938,6 +7078,7 @@ const Cerca = (() => {
     if (k.startsWith('sub.')) { if (el.id === 'lc-buscar') sugerirComercios(); return; }      // la hoja de encima: buscar un comercio
     E.hoja.sucio = true;
     if (E.hoja.tipo === 'ticket') ticketVivo();
+    if (el.id === 'g-precio' && E.hoja.estado === 'suelto' && E.hoja.vende === 'combo') { pintarCuentaCombo(E.hoja); return; }
     if (el.id === 'g-precio' && (E.hoja.estado === 'gondola' || E.hoja.estado === 'suelto')) { const v = veredictoGondola(E.hoja), n = $('#g-veredicto'); if (n) { n.textContent = v.texto; n.className = 'gondola-veredicto ' + v.tono; } }
     if (el.id === 'p-diario' && E.hoja.f) E.hoja.f.diarioTocado = true;
     if (el.id === 'p-categoria' && E.hoja.f && !E.hoja.f.diarioTocado) {
@@ -6958,6 +7099,7 @@ const Cerca = (() => {
   document.addEventListener('change', e => {
     const el = e.target;
     if (el.dataset && 'suelto' in el.dataset && E.hoja && E.hoja.estado === 'suelto') { actualizarSuelto(E.hoja); return; }
+    if (el.dataset && 'combo' in el.dataset && E.hoja && E.hoja.estado === 'suelto') { E.hoja.clave = null; actualizarSuelto(E.hoja); return; }
     if (el.dataset && el.dataset.cambio === 'ia') {      // usar o no la IA: vale para este teléfono
       try { if (el.checked) localStorage.removeItem(CLAVE_IA); else localStorage.setItem(CLAVE_IA, 'no'); } catch (x) { /* sin almacenamiento */ }
       pintar();

@@ -579,3 +579,7 @@ a.promo-hoy { display: block; margin: 0 0 10px; color: inherit; text-decoration:
 .punto-vivo { width: 9px; height: 9px; flex: none; border-radius: 50%; background: #E0362C; animation: latido 1.6s ease-in-out infinite; }
 @keyframes latido { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 @media (prefers-reduced-motion: reduce) { .punto-vivo { animation: none; } }
+.partes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.partes li { display: grid; grid-template-columns: 64px 108px minmax(0, 1fr) 44px; gap: 6px; align-items: center; }
+.partes input, .partes select { min-width: 0; }
+.combo-cuenta:not(:empty) { margin-top: 4px; }
