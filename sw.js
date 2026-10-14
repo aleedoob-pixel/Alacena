@@ -2,7 +2,7 @@
    Guarda los archivos de la app en el teléfono para que abra aunque no haya conexión (en un almacén sin
    señal, por ejemplo). Los datos del hogar no pasan por acá: de esos se ocupa Firebase, que tiene su propia
    copia en el teléfono. El mapa tampoco: sin conexión no hay mapa, y la lista de comercios queda igual. */
-const CACHE = 'libreta-v12';
+const CACHE = 'libreta-v14';
 const APP = ['./', 'index.html', 'estilos.css', 'app.js', 'config.js', 'manifest.webmanifest', 'privacidad.html', 'iconos/icono-192.png', 'iconos/icono-512.png'];
 // De otros sitios solo se guarda lo que la app necesita para arrancar: la biblioteca de Firebase y las tipografías.
 const AJENOS = ['www.gstatic.com', 'fonts.googleapis.com', 'fonts.gstatic.com'];
@@ -53,4 +53,26 @@ self.addEventListener('fetch', e => {
   const u = new URL(pedido.url);
   if (u.origin === location.origin) e.respondWith(redOGuardado(pedido));
   else if (AJENOS.includes(u.hostname)) e.respondWith(guardadoORed(pedido));
+});
+
+// Las notificaciones: llegan por Firebase Cloud Messaging (las manda la tarea herramientas/avisos.js) y se muestran
+// acá, aunque la app esté cerrada. Al tocarlas se abre la libreta en la pestaña que corresponde.
+self.addEventListener('push', e => {
+  let j = {};
+  try { j = e.data ? e.data.json() : {}; } catch (x) { j = { data: { cuerpo: e.data ? e.data.text() : '' } }; }
+  const d = Object.assign({}, j.notification || {}, j.data || {});
+  const titulo = d.titulo || d.title || 'Libreta del hogar', cuerpo = d.cuerpo || d.body || '';
+  e.waitUntil(self.registration.showNotification(titulo, {
+    body: cuerpo, tag: d.tag || undefined, renotify: !!d.tag, icon: 'iconos/icono-192.png', badge: 'iconos/icono-192.png',
+    lang: 'es', data: { url: d.url || './' },
+  }));
+});
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  const destino = new URL((e.notification.data && e.notification.data.url) || './', self.registration.scope).href;
+  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(l => {
+    const abierta = l.find(c => c.url.startsWith(self.registration.scope));
+    if (abierta) { abierta.navigate(destino).catch(() => {}); return abierta.focus(); }
+    return self.clients.openWindow(destino);
+  }));
 });

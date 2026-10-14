@@ -1889,6 +1889,12 @@ const Datos = (() => {
     const refs = [];
     if (ultimo) for (const sub of ['productos', 'meses', 'notas']) for (const d of (await conTope(de(sub), 30000)).docs) refs.push(d.ref);
     for (let i = 0; i < refs.length; i += TANDA) await enLinea(async tx => { for (const r of refs.slice(i, i + TANDA)) tx.delete(r); });
+    // los avisos pendientes del hogar (todos, si se borra; los propios, si solo sale) y las notificaciones de este teléfono
+    try {
+      const ev = await conTope(fs.getDocs(fs.query(fs.collection(base, 'eventos'), fs.where('h', '==', H.id))), 20000);
+      await Promise.all(ev.docs.filter(d => ultimo || (d.data() || {}).de === H.uid).map(d => fs.deleteDoc(d.ref).catch(() => {})));
+    } catch (e) { /* los borra la tarea de los avisos en unos minutos */ }
+    try { await avisos.desactivar(); } catch (e) { /* ya no estaban */ }
     despedida = ultimo ? 'borrado' : 'salio';      // desde acá, que el servidor avise la baja ya no es novedad
     await enLinea(async tx => { if (ultimo) tx.delete(H.hogar); tx.delete(refMiembro(H.id, H.uid)); tx.set(refUsuario(H.uid), { hogar: '' }, { merge: true }); });
     return despedida;
@@ -1972,6 +1978,7 @@ const Datos = (() => {
           throw e;
         }
         listo(id);
+        if (cfgAvisos.vapid) F.fs.getDoc(F.fs.doc(F.db, 'hogares', id)).then(d => { const a = (d.data() || {}).ajustes; if (a && a.avisos === true) evento('miembro', `${n} se sumó al hogar`, id, true); }).catch(() => {});
       } catch (e) { throw conPista(e); }
     },
     // Un código para sumar a otra persona. Vale unos minutos y sirve una sola vez.
@@ -2114,16 +2121,86 @@ const Datos = (() => {
      Cada nota dice hasta cuándo vale; pasada esa hora deja de mostrarse y se borra sola. */
   const TOPE_NOTAS = 40, LARGO_NOTA = 280;
   const refNota = id => F.fs.doc(F.db, 'hogares', H.id, 'notas', id);
+  /* ---------- notificaciones ----------
+     Cada teléfono que las activa guarda una «suscripción» (suscripciones/{uid}_{n}): su token de Firebase Cloud
+     Messaging, qué avisos quiere, en qué zonas está y lo que paga por lo de su alacena. Lo que pasa en el hogar se anota
+     en eventos/{id}. Una tarea de GitHub (herramientas/avisos.js) mira cada ~10 minutos lo nuevo y manda los avisos. */
+  let cfgAvisos = {};
+  try { if (typeof notificaciones === 'object' && notificaciones) cfgAvisos = notificaciones; } catch (e) { /* config.js sin notificaciones */ }
+  const CLAVE_PUSH = 'libreta.push';
+  const TIPOS_AVISO = ['lista', 'voy', 'nota', 'gasto', 'miembro', 'baratos', 'avisos', 'promos', 'resumen'];
+  const hash = s => { let a = 2166136261, b = 5381; for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); a = Math.imul(a ^ c, 16777619); b = (Math.imul(b, 33) ^ c) | 0; } return (a >>> 0).toString(36) + (b >>> 0).toString(36); };
+  /* Solo si en el hogar alguien activó las notificaciones (ajustes.avisos): si no, no hay a quién avisarle y no se
+     guarda nada. `ya`: quien llama ya lo comprobó (al sumarse a un hogar todavía no se leyeron sus ajustes). */
+  function evento(tipo, texto, hogar, ya) {
+    try {
+      const h = hogar || (H && H.id), u = F && F.auth.currentUser;
+      if (!h || !u || !TIPOS_AVISO.includes(tipo) || !cfgAvisos.vapid) return;
+      if (!ya && !(ajustes && ajustes.avisos === true)) return;
+      F.fs.setDoc(F.fs.doc(F.db, 'eventos', idNuevo()), { h, de: u.uid, tipo, texto: String(texto || '').replace(/\s+/g, ' ').trim().slice(0, 140), t: F.fs.serverTimestamp() }).catch(() => {});
+    } catch (e) { /* sin avisos esta vez */ }
+  }
+  const avisos = {
+    configurado: () => !!cfgAvisos.vapid,
+    soportado: () => typeof window !== 'undefined' && 'Notification' in window && 'serviceWorker' in navigator && 'PushManager' in window,
+    permiso: () => { try { return Notification.permission; } catch (e) { return 'denied'; } },
+    // lo que guardó este teléfono: { id, token, prefs } o null
+    estado() { try { const x = JSON.parse(localStorage.getItem(CLAVE_PUSH) || 'null'); return x && x.id && x.token ? x : null; } catch (e) { return null; } },
+    TIPOS: TIPOS_AVISO,
+    async activar(prefs) {
+      if (!avisos.configurado() || !avisos.soportado()) throw { code: 'avisos/no', texto: 'Este navegador no permite notificaciones.' };
+      const per = await Notification.requestPermission();
+      if (per !== 'granted') throw { code: 'avisos/negado', texto: per === 'denied' ? 'Las notificaciones están bloqueadas para esta página. Se habilitan en los permisos del navegador (el candadito junto a la dirección).' : 'No se dio el permiso para las notificaciones.' };
+      await cargar();
+      const m = await import(SDK + 'firebase-messaging.js');
+      if (m.isSupported && !(await m.isSupported())) throw { code: 'avisos/no', texto: 'Este navegador no permite notificaciones.' };
+      const reg = await navigator.serviceWorker.ready;
+      const token = await m.getToken(m.getMessaging(F.app), { vapidKey: cfgAvisos.vapid, serviceWorkerRegistration: reg });
+      if (!token) throw { code: 'avisos/token', texto: 'No se pudo activar. Probá de nuevo.' };
+      const u = sesion(), id = `${u.uid}_${hash(token)}`, ant = avisos.estado();
+      const p = Object.assign({}, (ant && ant.prefs) || {}, prefs || {});
+      for (const t of TIPOS_AVISO) if (typeof p[t] !== 'boolean') p[t] = true;
+      await conTope(F.fs.setDoc(F.fs.doc(F.db, 'suscripciones', id), { uid: u.uid, hogar: H ? H.id : '', token, prefs: p, zonas: (ant && ant.zonas) || [], claves: {}, propios: [], alertas: {}, t: F.fs.serverTimestamp() }), 15000);
+      if (ant && ant.id !== id) F.fs.deleteDoc(F.fs.doc(F.db, 'suscripciones', ant.id)).catch(() => {});
+      try { localStorage.setItem(CLAVE_PUSH, JSON.stringify({ id, token, prefs: p })); } catch (e) { /* sin almacenamiento */ }
+      return { id, prefs: p };
+    },
+    async preferencias(prefs) {
+      const x = avisos.estado();
+      if (!x) return;
+      x.prefs = Object.assign({}, x.prefs, prefs);
+      try { localStorage.setItem(CLAVE_PUSH, JSON.stringify(x)); } catch (e) { /* sin almacenamiento */ }
+      await enviar(pedido(() => F.fs.updateDoc(F.fs.doc(F.db, 'suscripciones', x.id), { prefs: x.prefs, t: F.fs.serverTimestamp() })));
+    },
+    // dónde está este teléfono (las zonas, no el punto) y cuánto paga por lo de su alacena: para avisar lo más barato
+    async zona(zonas, claves, propios, alertas) {
+      const x = avisos.estado();
+      if (!x || !F) return;
+      const d = { zonas: (zonas || []).slice(0, 30), claves: Object.fromEntries(Object.entries(claves || {}).slice(0, 150)), propios: (propios || []).slice(-30),
+        alertas: Object.fromEntries(Object.entries(alertas || {}).slice(0, 100)), hogar: H ? H.id : '', t: F.fs.serverTimestamp() };
+      try { await F.fs.updateDoc(F.fs.doc(F.db, 'suscripciones', x.id), d); } catch (e) { /* la próxima vez */ }
+    },
+    async desactivar() {
+      const x = avisos.estado();
+      try { localStorage.removeItem(CLAVE_PUSH); } catch (e) { /* sin almacenamiento */ }
+      if (!x) return;
+      try { await conTope(F.fs.deleteDoc(F.fs.doc(F.db, 'suscripciones', x.id)), 15000); } catch (e) { /* ya no estaba */ }
+      try { const m = await import(SDK + 'firebase-messaging.js'); await m.deleteToken(m.getMessaging(F.app)); } catch (e) { /* ya no tenía */ }
+    },
+  };
+
   const notasDelHogar = {
     largo: LARGO_NOTA,
     lista() { const ahora = Date.now(); return notas.filter(n => n.hasta > ahora); },
-    agregar(texto, dias) {
+    agregar(texto, dias, tipoAviso) {
       const t = String(texto == null ? '' : texto).replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim().slice(0, LARGO_NOTA);
       if (!t) return Promise.reject({ code: 'nube/nota-vacia', texto: 'Escribí algo en la nota.' });
       if (notasDelHogar.lista().length >= TOPE_NOTAS) return Promise.reject({ code: 'nube/notas-llenas', texto: 'Hay demasiadas notas. Borrá alguna que ya no haga falta.' });
       const d = Math.max(1, Math.min(60, Math.round(+dias) || 3)), ahora = Date.now(), yo = integrantes.find(x => x.yo);
       const dato = { texto: t, de: H.uid, nombre: yo ? yo.nombre : nombreSugerido(), creada: ahora, hasta: ahora + d * 864e5 };
-      return enviar(pedido(() => F.fs.setDoc(refNota(idNuevo()), dato)));
+      const p = enviar(pedido(() => F.fs.setDoc(refNota(idNuevo()), dato)));
+      p.then(() => evento(tipoAviso === 'voy' ? 'voy' : 'nota', tipoAviso === 'voy' ? `${dato.nombre} va a hacer las compras. ¿Falta algo? Anotalo en la lista.` : `${dato.nombre}: ${t.replace(/\s+/g, ' ').slice(0, 110)}`), () => {});
+      return p;
     },
     borrar(id) { return enviar(pedido(() => F.fs.deleteDoc(refNota(id)))); },
   };
@@ -2176,8 +2253,11 @@ const Datos = (() => {
       if (t.length >= 2) dato.t = t;
       if (/^[a-z]{3,12}$/.test(r.g || '')) dato.g = r.g;
       let envio;
-      try { dato.x = F.fs.Timestamp.fromMillis((dato.v + 2) * 864e5); envio = F.fs.setDoc(F.fs.doc(F.db, 'precios', `${dato.ze}_${dato.k}`), dato); }
+      // `ts`: cuándo se anotó (lo pone el servidor), para que la tarea de los avisos sepa qué es nuevo
+      // `sinNovedad`: es la confirmación de un precio que ya estaba (no se avisa como nuevo ni es «propio»)
+      try { dato.x = F.fs.Timestamp.fromMillis((dato.v + 2) * 864e5); if (!r.sinNovedad) dato.ts = F.fs.serverTimestamp(); envio = F.fs.setDoc(F.fs.doc(F.db, 'precios', `${dato.ze}_${dato.k}`), dato); }
       catch (e) { return Promise.resolve(false); }
+      if (!r.sinNovedad) try { const l = JSON.parse(localStorage.getItem('libreta.propios') || '[]').filter(x => x !== `${dato.ze}_${dato.k}`).concat(`${dato.ze}_${dato.k}`).slice(-30); localStorage.setItem('libreta.propios', JSON.stringify(l)); } catch (e) { /* sin almacenamiento */ }
       return Promise.race([envio.then(() => true, () => false), pausa(2500).then(() => true)]);
     },
     // Los que vencieron antes de ese día, sean de la zona que sean (hasta `tope`): [{ id, v }].
@@ -2235,6 +2315,7 @@ const Datos = (() => {
       const dato = { z: String(r.z), k: String(r.k), n: String(r.n).slice(0, 60), t: String(r.t).slice(0, 120), m: String(r.m || '').slice(0, 40), pct: Math.round(+r.pct) || 0,
         dias: (r.dias || []).map(Number).filter(x => Number.isInteger(x) && x >= 0 && x <= 6), hasta: Math.round(r.hasta), d: Math.round(r.d), la: +r.la, lo: +r.lo, h: String(r.h || '').slice(0, 40) };
       dato.x = F.fs.Timestamp.fromMillis((dato.hasta + 2) * 864e5);
+      dato.ts = F.fs.serverTimestamp();
       const envio = F.fs.setDoc(F.fs.doc(F.db, 'promos', id), dato);
       const ok = await Promise.race([envio.then(() => true, () => false), pausa(2500).then(() => true)]);
       if (!ok) throw { code: 'permission-denied', texto: 'El servidor no aceptó la promo: falta publicar las reglas nuevas (el archivo firestore.rules).' };
@@ -2310,13 +2391,15 @@ const Datos = (() => {
     comercios,
     promos,
     mover,
+    avisos,
+    evento,
     // La app de Firebase ya iniciada y de dónde se baja la biblioteca: para sumarle otros servicios (la IA).
     async firebase() { await cargar(); return { app: F.app, sdk: SDK }; },
     textos: {
       sinConexion: 'No se pudo abrir la conexión con el servidor. Revisá internet y recargá la página.',
       donde: 'Los datos de este hogar se guardan en Firebase, un servicio de Google, y los ven solo sus integrantes. Cada teléfono guarda una copia para seguir andando sin conexión. Las fotos de los tickets quedan en el teléfono donde se cargaron.',
       fallo: 'No se pudo guardar. Revisá la conexión y probá de nuevo.',
-      version: 'Libreta del hogar · versión 2.6.0 (2026-10-14)',       // el número y la fecha los pone armar.js
+      version: 'Libreta del hogar · versión 2.8.0 (2026-10-14)',       // el número y la fecha los pone armar.js
     },
     /* Devuelve { db, permiso } si en este teléfono ya hay una cuenta con su hogar. Si no, { puerta, alEntrar }:
        la app muestra la entrada y `alEntrar` se cumple cuando se entra a un hogar. null: sin conexión. */
@@ -3060,6 +3143,19 @@ const Cerca = (() => {
     return { precios, promos: lp.slice(0, 10) };
   }
 
+  /* Confirmar que un precio de otro hogar sigue igual: el mismo documento, con la fecha de hoy y una confirmación más.
+     Conserva quién lo cargó y no se avisa como novedad. d: el documento tal como vino de Datos.precios. */
+  function confirmar(d) {
+    const hoy = N.diaDe(N.hoyISO());
+    return Datos.precios.aportar({ z: d.z, e: d.e, k: d.k, p: d.p, d: hoy, c: Math.min(9999, (+d.c || 1) + 1), la: d.la, lo: d.lo, v: hoy + VALE,
+      n: d.n, h: d.h || '', qs: d.qs || 0, qn: d.qn || 0, t: d.t, g: d.g, sinNovedad: true });
+  }
+  // Los precios vigentes que la zona tiene de un comercio (para confirmarlos): [{ id, z, e, k, p, d, c, t, … }].
+  async function deComercio(k, lat, lon) {
+    const hoy = N.diaDe(N.hoyISO()), docs = await Datos.precios.deZonas([A.celda(lat, lon)], 600);
+    return docs.filter(d => d.k === k && d.v >= hoy && d.p > 0 && typeof d.t === 'string').sort((a, b) => a.d - b.d);
+  }
+
   /* ---------- promos de la zona ----------
      Las que cargan los hogares: por día, banco o billetera. Las vencidas no se muestran y se borran. */
   async function promos(pos) {
@@ -3217,7 +3313,7 @@ const Cerca = (() => {
     },
     posicion, ultimaPosicion, olvidarPosicion,
     cercanos, sugerir, ubicarSugerido, detalle, ubicacion, recordar, marcar, enlace, conocido: deMemoria, conOficiales: () => !!OFICIALES,
-    buscar, buscarTexto, aportar, limpiar, dibujar, promos, cargarPromo,
+    buscar, buscarTexto, aportar, confirmar, deComercio, VALE, limpiar, dibujar, promos, cargarPromo,
     RADIO_ZONA,
   };
 })();
@@ -3608,7 +3704,7 @@ const Cerca = (() => {
     ['gastos', 'Cuánto gastás y cuánto ahorrás', 'Cada compra queda anotada en Gastos: cuánto se va por mes, en qué y cuánto subió cada cosa. Y en Novedades, cuánto ahorraste gracias a otros hogares.'],
   ];
   // Con el mapa encendido hay un paso más: la comunidad de hogares de la zona.
-  const PASO_ZONA = ['mapa', 'Una comunidad de hogares', 'Cuando anotás lo que pagaste, la libreta te avisa si otro hogar de tu zona lo consiguió más barato, y dónde. También ves los precios oficiales de los supermercados y las promos del día con tu banco o billetera. Compartir es optativo: va con el nombre que elijas para tu hogar, nunca con el tuyo.'];
+  const PASO_ZONA = ['mapa', 'Una comunidad de hogares', 'Avisá un precio de lo que sea y aparece al instante en el mapa del barrio; confirmá con un toque los que cargaron otros. La libreta te avisa si otro hogar consiguió más barato lo que comprás, y dónde. También ves los precios oficiales de los supermercados y las promos del día con tu banco o billetera. Compartir es optativo: va con el nombre que elijas para tu hogar, nunca con el tuyo.'];
   // Con la IA encendida, otro: las ideas para cocinar y la foto de las promos.
   const PASO_IA = ['olla', 'Ideas con inteligencia artificial', '¿No sabés qué cocinar? «¿Qué cocino?», en la Alacena, te propone comidas con lo que tenés y anota en la lista lo poco que falte. Y si ves un cartel de promo, sacale una foto: la IA la completa sola y la compartís con tu zona.'];
   function pasosTutorial() {
@@ -3773,7 +3869,9 @@ const Cerca = (() => {
     return {
       frecuencia: N.FRECUENCIAS.includes(d.frecuencia) ? d.frecuencia : 7, presupuesto: +d.presupuesto > 0 ? +d.presupuesto : 0,
       compartir: d.compartir === true ? true : d.compartir === false ? false : null, comercios,
-      alias: typeof d.alias === 'string' ? d.alias.slice(0, 40) : '',
+      alias: typeof d.alias === 'string' ? d.alias.slice(0, 40) : '', avisos: d.avisos === true,
+      ahorroDias: esObjeto(d.ahorroDias) ? Object.fromEntries(Object.entries(d.ahorroDias).filter(([k, v]) => /^\d{4,6}$/.test(k) && +v > 0).map(([k, v]) => [k, +v])) : {},
+      aportes: esObjeto(d.aportes) ? Object.fromEntries(Object.entries(d.aportes).filter(([m, v]) => /^\d{4}-\d{2}$/.test(m) && +v > 0).map(([m, v]) => [m, Math.round(+v)])) : {},
       ahorro: esObjeto(d.ahorro) ? Object.fromEntries(Object.entries(d.ahorro).filter(([m, v]) => /^\d{4}-\d{2}$/.test(m) && +v > 0).map(([m, v]) => [m, +v])) : {},
     };
   }
@@ -3784,7 +3882,10 @@ const Cerca = (() => {
     const doc = { frecuencia: nuevo.frecuencia, presupuesto: nuevo.presupuesto };      // lo que nunca se usó no se guarda
     if (nuevo.compartir != null) doc.compartir = nuevo.compartir;
     if (nuevo.alias || antes.alias) doc.alias = nuevo.alias || '';
+    if (nuevo.avisos) doc.avisos = true;           // alguien del hogar activó las notificaciones: vale la pena anotar lo que pasa
     if (Object.keys(nuevo.ahorro || {}).length) doc.ahorro = nuevo.ahorro;
+    if (Object.keys(nuevo.ahorroDias || {}).length) doc.ahorroDias = nuevo.ahorroDias;
+    if (Object.keys(nuevo.aportes || {}).length) doc.aportes = nuevo.aportes;
     if (Object.keys(nuevo.comercios).length || Object.keys(antes.comercios).length) doc.comercios = nuevo.comercios;
     const r = colaAjustes.then(() => escribir(() => E.db.doc('ajustes/hogar').set(doc)));
     colaAjustes = r.catch(() => {});
@@ -4024,6 +4125,23 @@ const Cerca = (() => {
   }
   const conCodigo = () => V.prods.filter(par => !par[1].ejemplo && codigoDe(par[1])).slice(0, 60);
   const firmaCerca = pos => A.celda(pos.lat, pos.lon) + '|' + conCodigo().map(par => codigoDe(par[1])).sort().join(',');
+  /* Para los avisos de «más barato cerca»: la suscripción de este teléfono sabe en qué zonas está (no el punto) y
+     cuánto paga el hogar por lo que tiene con código o cargado sin código. Se actualiza cuando cambia, como mucho cada 6 horas. */
+  function zonaParaAvisos(pos) {
+    if (!Datos.avisos || !Datos.avisos.estado() || !pos) return;
+    const claves = {};
+    for (const [, p] of V.prods) { const k = codigoDe(p); if (k && !p.ejemplo && p.precio > 0) claves[k] = N.redondear2(p.precio); }
+    let propios = [];
+    try { propios = JSON.parse(localStorage.getItem('libreta.propios') || '[]'); } catch (e) { propios = []; }
+    const alertas = {};
+    for (const [, p] of V.prods) { const k = codigoDe(p); if (k && !p.ejemplo && p.alerta > 0) alertas[k] = N.redondear2(p.alerta); }
+    const zonas = A.celdasCerca(pos.lat, pos.lon, C.RADIO_ZONA), firma = zonas.join(',') + '|' + JSON.stringify(claves) + '|' + JSON.stringify(alertas) + '|' + propios.join(',');
+    let ant = null;
+    try { ant = JSON.parse(localStorage.getItem('libreta.pushZona') || 'null'); } catch (e) { ant = null; }
+    if (ant && ant.firma === firma && Date.now() - ant.t < 6 * 3600e3) return;
+    try { localStorage.setItem('libreta.pushZona', JSON.stringify({ firma, t: Date.now() })); } catch (e) { /* sin almacenamiento */ }
+    Datos.avisos.zona(zonas, claves, propios, alertas);
+  }
   async function actualizarCerca() {
     const pos = C.ultimaPosicion();
     if (!puedeCerca() || !pos || E.cerca.estado === 'buscando') return;
@@ -4037,6 +4155,7 @@ const Cerca = (() => {
     } catch (e) { porId = antes; nota = (e && e.texto) || 'No se pudieron traer los precios de tu zona. Revisá la conexión.'; }
     E.cerca = { estado: nota ? 'error' : 'listo', pos, porId, firma, t: Date.now(), nota };
     pintar();
+    zonaParaAvisos(pos);
     if (Date.now() - (E.promos.t || 0) > 3600e3 || E.promos.estado === 'error') actualizarPromos(pos);
   }
   /* Después de anotar precios: si el hogar comparte, van a la zona; y se mira si otros lo consiguieron más barato.
@@ -4051,7 +4170,7 @@ const Cerca = (() => {
     if (!con.length) return null;
     const out = { baratos: [], compartidos: 0, preguntar: false, ref, porId: new Map(), ahorro: 0 };
     if (ref && E.ajustes.compartir === true) {
-      try { out.compartidos = await C.aportar(con, ref, dia, E.ajustes.alias, lugarDe(ref)); } catch (e) { out.compartidos = 0; }
+      try { out.compartidos = await aportarZona(con, ref, dia, E.ajustes.alias, lugarDe(ref)); } catch (e) { out.compartidos = 0; }
       if (out.compartidos) E.cerca.t = 0;                              // lo de la zona cambió: se vuelve a pedir cuando haga falta
     } else if (ref && E.ajustes.compartir == null) { out.preguntar = true; E.porCompartir = { items: con, ref, dia }; }
     // se mira cerca de donde se compró; si ese comercio no está ubicado, cerca del teléfono
@@ -4092,7 +4211,10 @@ const Cerca = (() => {
     const mes = iso.slice(0, 7), ah = Object.assign({}, E.ajustes.ahorro);
     ah[mes] = N.redondear2((ah[mes] || 0) + monto);
     for (const m of Object.keys(ah).sort().slice(0, -12)) delete ah[m];       // se guardan los últimos 12 meses
-    cambiarAjustes({ ahorro: ah }).catch(() => {});
+    const ad = Object.assign({}, E.ajustes.ahorroDias), dia = String(N.diaDe(iso));      // y por día, los últimos 40 (para la semana)
+    ad[dia] = N.redondear2((+ad[dia] || 0) + monto);
+    for (const k of Object.keys(ad)) if (+k < hoyDia() - 40) delete ad[k];
+    cambiarAjustes({ ahorro: ah, ahorroDias: ad }).catch(() => {});
   }
   const ahorroDelMes = () => +(E.ajustes.ahorro || {})[N.hoyISO().slice(0, 7)] || 0;
   const detalleOferta = (o, hoy) => [o.comercio ? `en ${o.comercio}` : '', o.dist != null ? `a ${A.distTexto(o.dist)}${o.deCompra ? ' de donde compraste' : ''}` : '', A.haceDias(hoy - o.dia), A.origen(o), A.recoTexto([o]),
@@ -4149,6 +4271,8 @@ const Cerca = (() => {
     return h`<div class="bloque cerca"><h2 class="bloque-t">Precios cerca tuyo</h2>
       ${c.estado === 'buscando' && !hayAlgo ? cargando('Buscando precios en tu zona…') : ''}
       ${c.nota ? h`<p class="nota gris">${c.nota}</p>` : ''}
+      ${alertasCumplidas().length ? h`<div class="nota verde bajo"><p><strong>🔔 ¡Bajó!</strong></p><ul class="ofertas">${alertasCumplidas().map(x => h`<li><span class="oferta-nombre">${x.p.nombre}</span><strong class="oferta-precio">${N.plata(x.o.precio)}</strong>
+          <span class="oferta-detalle">${detalleOferta(x.o, hoy)} · pediste que te avise por debajo de ${N.plata(x.p.alerta)}</span></li>`)}</ul></div>` : ''}
       ${of.length ? h`<p><strong>Otros hogares lo consiguieron más barato:</strong></p>
           <ul class="ofertas">${of.slice(0, 12).map(x => h`<li><span class="oferta-nombre">${x.p.nombre}</span><strong class="oferta-precio">${N.plata(x.o.precio)}</strong>
             <span class="oferta-detalle">${detalleOferta(x.o, hoy)} · vos lo pagaste ${N.plata(x.p.precio)}</span></li>`)}</ul>`
@@ -4158,8 +4282,227 @@ const Cerca = (() => {
       ${compartir}</div>`;
   }
 
-  // Lo que el hogar ahorró este mes gracias a la comunidad.
+  /* ---------- lo que motiva: el ahorro de la semana, lo que aporta el hogar, el barrio ---------- */
+  const ahorroSemana = () => { const hoy = hoyDia(); return N.redondear2(Object.entries(E.ajustes.ahorroDias || {}).filter(([d]) => +d > hoy - 7).reduce((s, [, v]) => s + (+v || 0), 0)); };
+  const aportesDelMes = () => +(E.ajustes.aportes || {})[N.hoyISO().slice(0, 7)] || 0;
+  function contarAportes(n) {
+    if (!(n > 0)) return;
+    const mes = N.hoyISO().slice(0, 7), ap = Object.assign({}, E.ajustes.aportes);
+    ap[mes] = (+ap[mes] || 0) + n;
+    for (const m of Object.keys(ap).sort().slice(0, -12)) delete ap[m];
+    cambiarAjustes({ aportes: ap }).catch(() => {});
+  }
+  // Todo lo que se comparte con la zona pasa por acá, para contar lo que aporta el hogar.
+  async function aportarZona(items, ref, dia, alias, lugar) {
+    const n = await C.aportar(items, ref, dia, alias, lugar);
+    contarAportes(n);
+    return n;
+  }
+  const URL_APP = () => location.origin + location.pathname.replace(/index\.html$/, '');
+  // Compartir: con el menú del teléfono (WhatsApp, etc.) si lo tiene, con una imagen si se puede; si no, WhatsApp web.
+  async function compartirTexto(texto, archivo) {
+    try {
+      if (archivo && navigator.canShare && navigator.canShare({ files: [archivo] })) { await navigator.share({ text: texto, files: [archivo] }); return; }
+      if (navigator.share) { await navigator.share({ text: texto }); return; }
+    } catch (e) { if (e && e.name === 'AbortError') return; }
+    window.open('https://wa.me/?text=' + encodeURIComponent(texto), '_blank', 'noopener');
+  }
+  // La tarjeta del ahorro, para mandar por WhatsApp: una imagen cuadrada con el monto.
+  async function tarjetaAhorro(monto, cuando) {
+    try {
+      const c = document.createElement('canvas'); c.width = c.height = 1080;
+      const x = c.getContext('2d');
+      x.fillStyle = '#2343B5'; x.fillRect(0, 0, 1080, 1080);
+      x.fillStyle = '#FFE352'; x.fillRect(0, 760, 1080, 320);
+      x.fillStyle = '#FFFFFF'; x.textAlign = 'center';
+      x.font = '700 64px Archivo, system-ui, sans-serif'; x.fillText(cuando === 'semana' ? 'Esta semana ahorré' : 'Este mes ahorré', 540, 250);
+      x.font = '900 190px Archivo, system-ui, sans-serif'; x.fillText(N.plata(monto), 540, 470, 1000);
+      x.font = '500 50px Archivo, system-ui, sans-serif'; x.fillText('comprando donde otros hogares', 540, 590); x.fillText('del barrio encontraron mejor precio', 540, 655);
+      x.fillStyle = '#131C33'; x.font = '800 70px Archivo, system-ui, sans-serif'; x.fillText('LIBRETA del hogar', 540, 900);
+      x.font = '500 40px Archivo, system-ui, sans-serif'; x.fillText('Gratis · sumate y compartamos precios', 540, 975);
+      const b = await new Promise(ok => c.toBlob(ok, 'image/png'));
+      return b ? new File([b], 'mi-ahorro.png', { type: 'image/png' }) : null;
+    } catch (e) { return null; }
+  }
+  // Lo de la zona para el bloque del barrio: cuántos precios hay, qué hogares aportan más y si hay algo para confirmar acá.
+  async function actualizarBarrio(forzar) {
+    const pos = C.ultimaPosicion();
+    if (!puedeCerca() || !pos || !Datos.precios.deZonas) return;
+    if (!forzar && E.barrio && (E.barrio.estado === 'buscando' || Date.now() - E.barrio.t < 20 * 60000)) return;
+    E.barrio = Object.assign({}, E.barrio, { estado: 'buscando', t: Date.now() });
+    let docs = null;
+    try { docs = await Datos.precios.deZonas(A.celdasCerca(pos.lat, pos.lon, C.RADIO_ZONA), 600); } catch (e) { docs = null; }
+    const hoy = hoyDia(), vig = (docs || []).filter(d => d.v >= hoy && d.p > 0 && A.puntoValido(d.la, d.lo) && A.distancia(pos.lat, pos.lon, d.la, d.lo) <= C.RADIO_ZONA);
+    const hog = new Map();
+    let anonimos = 0;
+    for (const d of vig) { if (typeof d.h === 'string' && d.h) hog.set(d.h, (hog.get(d.h) || 0) + 1); else anonimos++; }
+    // un comercio a menos de 150 m de donde está el teléfono, con precios de otros para confirmar
+    let propios = [];
+    try { propios = JSON.parse(localStorage.getItem('libreta.propios') || '[]'); } catch (e) { propios = []; }
+    const cerca = new Map();
+    for (const d of vig) {
+      if (propios.includes(d.id) || typeof d.t !== 'string') continue;
+      const dist = A.distancia(pos.lat, pos.lon, d.la, d.lo);
+      if (dist > 150) continue;
+      const c = cerca.get(d.k) || { k: d.k, n: nombreDeRef(d.k) || d.n || 'este comercio', dist, docs: [] };
+      c.docs.push(d); cerca.set(d.k, c);
+    }
+    const aca = [...cerca.values()].sort((a, b) => a.dist - b.dist)[0] || null;
+    E.barrio = { estado: docs ? 'listo' : 'error', t: Date.now(), precios: vig.length, hogares: [...hog].map(([h, n]) => ({ h, n })).sort((a, b) => b.n - a.n), anonimos, aca, pos };
+    if (E.tab === 'novedades') pintar();
+  }
+  function bloqueBarrio() {
+    const sem = ahorroSemana(), mes = ahorroDelMes(), ap = aportesDelMes(), B = E.barrio, mio = E.ajustes.alias;
+    const partes = [];
+    if (sem > 0 || mes > 0) {
+      partes.push(h`<div class="ahorro-caja"><p class="canasta-pct verde">${N.plata(sem > 0 ? sem : mes)}</p>
+        <p class="mes-nota">ahorraste ${sem > 0 ? 'esta semana' : 'este mes'} comprando donde otros hogares encontraron mejor precio${sem > 0 && mes > sem ? ` · ${N.plata(mes)} en el mes` : ''}</p>
+        <div class="acciones"><button type="button" class="btn btn-chico btn-principal" data-act="compartir-ahorro" data-cuando="${sem > 0 ? 'semana' : 'mes'}">Compartir mi ahorro</button></div></div>`);
+    }
+    partes.push(h`<p>${ap ? h`<strong>Tu hogar avisó ${ap} ${N.plural(ap, 'precio', 'precios')} este mes.</strong> ${B && B.precios ? `Los ven los hogares de tu zona: ¡gracias!` : ''}` : 'Cada precio que avisás les sirve a todos los hogares de tu zona.'}</p>`);
+    if (B && B.aca && E.ajustes.compartir !== false) {
+      partes.push(h`<div class="nota aca-confirmar"><p><strong>¿Estás en ${B.aca.n}?</strong> Hay ${B.aca.docs.length} ${N.plural(B.aca.docs.length, 'precio', 'precios')} de otros hogares para confirmar con un toque.</p>
+        <div class="acciones"><button type="button" class="btn btn-chico btn-principal" data-act="confirmar" data-k="${B.aca.k}">Confirmar precios</button></div></div>`);
+    }
+    if (B && B.estado === 'listo') {
+      const top = B.hogares.slice(0, 5);
+      partes.push(h`<p class="tenue chico">En tu zona hay <strong>${B.precios} ${N.plural(B.precios, 'precio vigente', 'precios vigentes')}</strong> que cargaron los hogares.</p>
+        ${top.length ? h`<p class="chico"><strong>Los hogares que más aportan:</strong></p><ol class="ranking">${top.map(x => h`<li${atr('class="yo"', !!mio && x.h === mio)}><span>${x.h}${mio && x.h === mio ? ' (vos)' : ''}</span><strong>${x.n}</strong></li>`)}</ol>
+          ${!mio ? h`<p class="tenue chico">Para figurar acá, elegí un nombre público para tu hogar en Ajustes.</p>` : ''}` : ''}`);
+    }
+    partes.push(h`<div class="acciones"><button type="button" class="btn btn-chico" data-act="invitar-barrio">${ico('familia')}Invitar vecinos</button></div>`);
+    return h`<div class="bloque barrio"><h2 class="bloque-t">Tu barrio</h2>${partes}</div>`;
+  }
+
+  /* ---------- confirmar los precios de un comercio: «¿sigue a este precio?» ---------- */
+  async function abrirConfirmar(k) {
+    if (!puede() || !puedeCerca() || !k) return;
+    let l = C.conocido(k);
+    const B = E.barrio && E.barrio.aca && E.barrio.aca.k === k ? E.barrio.aca : null;
+    if (!l && B) l = { lat: B.docs[0].la, lon: B.docs[0].lo, nombre: B.docs[0].n };
+    if (!l) { try { l = await ubicacionDe(k); } catch (e) { l = null; } }
+    if (!l) return avisar('No se encontró dónde queda ese comercio.');
+    const H = { tipo: 'confirmar', k, nombre: nombreDeRef(k) || l.nombre || 'este comercio', estado: 'cargando', items: [], error: '' };
+    abrirHoja(H);
+    let docs = null;
+    try { docs = await C.deComercio(k, l.lat, l.lon); } catch (e) { docs = null; }
+    if (E.hoja !== H) return;
+    let propios = [], hechos = {};
+    try { propios = JSON.parse(localStorage.getItem('libreta.propios') || '[]'); hechos = JSON.parse(localStorage.getItem('libreta.confirmados') || '{}'); } catch (e) { /* nada */ }
+    const hoy = hoyDia();
+    H.items = (docs || []).filter(d => !propios.includes(d.id)).map(d => ({ d, estado: hechos[d.id] === hoy ? 'sigue' : '', nuevo: '' }));
+    H.estado = docs ? 'listo' : 'error';
+    renderHoja();
+  }
+  async function confirmarPrecio(i, cambio) {
+    const H = E.hoja, it = H && H.tipo === 'confirmar' ? H.items[i] : null;
+    if (!it || it.ocupado || !puede()) return;
+    if (E.ajustes.compartir === false) { H.error = 'Tu hogar eligió no compartir precios con la zona. Se cambia en Ajustes.'; renderHoja(); return; }
+    if (E.ajustes.compartir == null) { try { await cambiarAjustes({ compartir: true }); } catch (e) { H.error = textoFallo(e); renderHoja(); return; } }
+    const d = it.d, hoy = hoyDia();
+    let ok = false;
+    if (!cambio) {
+      it.ocupado = true; renderHoja();
+      try { ok = await C.confirmar(d); } catch (e) { ok = false; }
+      if (ok) { try { const x = JSON.parse(localStorage.getItem('libreta.confirmados') || '{}'); x[d.id] = hoy; for (const k of Object.keys(x)) if (x[k] < hoy - 20) delete x[k]; localStorage.setItem('libreta.confirmados', JSON.stringify(x)); } catch (e) { /* nada */ } contarAportes(1); }
+    } else {
+      const precio = N.aNumero(limpio(it.nuevo));
+      if (!(precio > 0)) { it.error = 'Escribí el precio que ves.'; renderHoja(); return; }
+      it.ocupado = true; renderHoja();
+      try { ok = (await aportarZona([{ codigo: d.e, precio, reco: 0, texto: d.t, cat: d.g || '' }], d.k, hoy, E.ajustes.alias, { lat: d.la, lon: d.lo, nombre: d.n })) > 0; } catch (e) { ok = false; }
+      if (ok) it.d = Object.assign({}, d, { p: precio, d: hoy });
+    }
+    if (E.hoja !== H) return;
+    it.ocupado = false; it.error = ok ? '' : 'No se pudo guardar. Probá de nuevo.';
+    if (ok) { it.estado = cambio ? 'cambio' : 'sigue'; it.abierto = false; }
+    renderHoja();
+  }
+
+  /* ---------- arranque rápido: lo que hay en casa, con un toque ---------- */
+  const BASICOS = [
+    ['almacen', ['Yerba', 'Azúcar', 'Aceite', 'Fideos', 'Arroz', 'Harina', 'Sal', 'Café', 'Té', 'Galletitas', 'Puré de tomate', 'Mayonesa']],
+    ['lacteos', ['Leche', 'Huevos', 'Manteca', 'Queso cremoso', 'Yogur', 'Dulce de leche']],
+    ['frescos', ['Papa', 'Cebolla', 'Tomate', 'Banana', 'Manzana']],
+    ['carnes', ['Pollo', 'Carne picada', 'Jamón cocido']],
+    ['panaderia', ['Pan']],
+    ['bebidas', ['Agua', 'Gaseosa']],
+    ['limpieza', ['Lavandina', 'Detergente', 'Jabón en polvo']],
+    ['higiene', ['Papel higiénico', 'Jabón', 'Pasta dental', 'Shampoo']],
+  ];
+  const POR_KILO = new Set(['Papa', 'Cebolla', 'Tomate', 'Banana', 'Manzana', 'Pollo', 'Carne picada']);
+  function vistaArranque(H) {
+    const n = Object.values(H.sel).filter(Boolean).length, faltan = Object.values(H.sel).filter(v => v === 2).length;
+    return marco('¿Qué hay en tu casa?', h`<div class="hoja-cuerpo">
+      <p class="tenue chico">Tocá una vez lo que <strong>hay</strong>, dos veces lo que <strong>falta</strong> (va a la lista de compras). Lo que no usás, dejalo. Después se ajusta todo.</p>
+      ${BASICOS.map(([cat, l]) => h`<div class="campo"><span>${N.CATS[cat]}</span><div class="chips envuelve" role="group">${l.map(nom => {
+        const v = H.sel[nom] || 0;
+        return h`<button type="button" class="chip${v === 1 ? ' puesto' : v === 2 ? ' falta' : ''}" data-act="arranque-toque" data-n="${nom}" aria-pressed="${v ? 'true' : 'false'}" aria-label="${nom}: ${v === 1 ? 'hay' : v === 2 ? 'falta' : 'no'}">${v === 2 ? '🛒 ' : v === 1 ? '✓ ' : ''}${nom}</button>`;
+      })}</div></div>`)}
+      ${H.error ? h`<p class="error" role="alert">${H.error}</p>` : ''}
+      <div class="hoja-pie"><button type="button" class="btn" data-act="cerrar">Ahora no</button>
+        <button type="button" class="btn btn-principal" data-act="arranque-listo"${atr('disabled', !n || H.ocupado)}>${H.ocupado ? 'Cargando…' : n ? `Cargar ${n}${faltan ? ` (${faltan} a la lista)` : ''}` : 'Elegí algo'}</button></div></div>`);
+  }
+  async function guardarArranque() {
+    const H = E.hoja;
+    if (!H || H.tipo !== 'arranque' || H.ocupado || !puede()) return;
+    const ya = new Set(V.prods.filter(([, p]) => !p.ejemplo).map(([, p]) => N.norm(p.nombre)));
+    const lista = [];
+    for (const [cat, l] of BASICOS) for (const nom of l) if (H.sel[nom] && !ya.has(N.norm(nom))) lista.push({ nom, cat, v: H.sel[nom] });
+    H.ocupado = true; renderHoja();
+    let n = 0;
+    try {
+      for (const x of lista) {
+        await crearProducto({ nombre: x.nom, categoria: x.cat, stock: x.v === 1 ? 1 : 0, pedido: x.v === 2 ? hoyDia() : 0, suelto: true, porKg: POR_KILO.has(x.nom) });
+        n++;
+      }
+    } catch (e) { if (E.hoja === H) { H.ocupado = false; H.error = textoFallo(e); renderHoja(); } return; }
+    if (E.hoja === H) cerrarHoja();
+    const f = lista.filter(x => x.v === 2).length;
+    pintar();
+    avisar(`Listo: ${n} ${N.plural(n, 'producto cargado', 'productos cargados')}${f ? `, ${f} en la lista de compras` : ''}`, f ? { rotulo: 'Ver la lista', fn: () => irA('compras') } : undefined);
+  }
+
+  /* ---------- «avisame cuando baje» ---------- */
+  function bloqueAlerta(id, p) {
+    if (!puedeCerca() || !codigoDe(p)) return '';
+    const H = E.hoja || {};
+    if (H.alertaEdit) {
+      return h`<div class="dato alerta"><label class="campo"><span>Avisame si cerca está a menos de</span>
+        <input type="text" id="p-alerta" data-k="alertaPrecio" value="${H.alertaPrecio}" inputmode="decimal" autocomplete="off" placeholder="$"></label>
+        <div class="acciones"><button type="button" class="btn btn-chico" data-act="alerta-cancelar">Cancelar</button><button type="button" class="btn btn-chico btn-principal" data-act="alerta-guardar" data-id="${id}" data-escribe>Guardar</button></div></div>`;
+    }
+    return p.alerta > 0
+      ? h`<div class="dato alerta"><span>🔔 Te aviso si cerca baja de <strong>${N.plata(p.alerta)}</strong>.</span>
+          <span class="acciones"><button type="button" class="enlace" data-act="alerta-editar" data-id="${id}">Cambiar</button><button type="button" class="enlace" data-act="alerta-quitar" data-id="${id}" data-escribe>Quitar</button></span></div>`
+      : h`<div class="dato alerta"><button type="button" class="btn btn-chico" data-act="alerta-editar" data-id="${id}" data-escribe>🔔 Avisame cuando baje</button></div>`;
+  }
+  function guardarAlerta(id, valor) {
+    const p = E.prod.get(id);
+    if (!p || !puede()) return;
+    E.prod.set(id, { ...p, alerta: valor });
+    enCola(id, () => escribir(() => E.db.doc('productos/' + id).update({ alerta: valor }))).then(() => {
+      avisar(valor ? `Te aviso cuando ${p.nombre} esté a menos de ${N.plata(valor)} cerca${Datos.avisos && Datos.avisos.configurado() && !Datos.avisos.estado() ? '. Activá las notificaciones en Ajustes para enterarte aunque la app esté cerrada' : ''}` : 'Aviso quitado');
+      try { localStorage.removeItem('libreta.pushZona'); } catch (e) { /* nada */ }
+      const pos = C.ultimaPosicion(); if (pos) zonaParaAvisos(pos);
+    }, falloGuardar);
+    if (E.hoja) { E.hoja.alertaEdit = false; renderHoja(); }
+    pintar();
+  }
+  // Los productos con aviso que ya bajaron cerca: [{ id, p, o }].
+  function alertasCumplidas() {
+    const out = [];
+    for (const [id, l] of V.cerca) {
+      const p = verProd(id);
+      if (!p || !(p.alerta > 0)) continue;
+      const o = l.filter(x => !x.propio && x.precio <= p.alerta).sort((a, b) => a.precio - b.precio)[0];
+      if (o) out.push({ id, p, o });
+    }
+    return out;
+  }
+
+  // Lo que el hogar ahorró este mes gracias a la comunidad (sin el mapa; con él, va en «Tu barrio»).
   function bloqueAhorro() {
+    if (puedeCerca()) return '';
     const m = ahorroDelMes();
     if (!(m > 0)) return '';
     return h`<div class="bloque ahorro"><h2 class="bloque-t">Ahorro con la comunidad</h2>
@@ -4167,6 +4510,13 @@ const Cerca = (() => {
       <p class="mes-nota">ahorraste este mes comprando donde otros hogares encontraron mejor precio</p></div>`;
   }
   /* ---------- promos de la zona ---------- */
+  // Cómo se llama quien usa este teléfono, para los avisos al resto del hogar («Caro anotó en la lista…»).
+  function miNombre() {
+    try {
+      const i = Datos.hogar && Datos.hogar.integrantes ? Datos.hogar.integrantes().find(x => x.yo) : null, y = Datos.hogar && Datos.hogar.yo ? Datos.hogar.yo() : null;
+      return (i && i.nombre) || (y && y.nombre) || 'Alguien';
+    } catch (e) { return 'Alguien'; }
+  }
   /* ---------- la IA (Gemini, ver ia.js): leer la foto de una promo y proponer comidas ----------
      Cada teléfono elige si la usa (Ajustes); por omisión sí, cuando el sitio la tiene configurada. */
   const CLAVE_IA = 'libreta.ia';
@@ -4276,7 +4626,8 @@ const Cerca = (() => {
     for (const x of V.compras) { const c = ((V.plan && V.plan.porId.get(x.id)) || []).find(k => k.ahorro > 0); if (c) consejos.push({ x, c }); }
     consejos.sort((a, b) => b.c.ahorro - a.c.ahorro);
     $('#no-resumen').textContent = nov.cambios.length ? `${nov.cambios.length} ${N.plural(nov.cambios.length, 'producto cambió', 'productos cambiaron')} de precio en los últimos 45 días` : '';
-    const partes = [bloqueBuscador(), bloqueAhorro(), bloqueCanasta(inf), bloquePromos(), bloqueCercaNovedades()];
+    if (puedeCerca()) actualizarBarrio();
+    const partes = [bloqueBuscador(), puedeCerca() ? bloqueBarrio() : '', bloqueAhorro(), bloqueCanasta(inf), bloquePromos(), bloqueCercaNovedades()];
     if (consejos.length) {
       partes.push(h`<div class="bloque"><h2 class="bloque-t">Para la próxima compra</h2>
         <ul class="consejos">${consejos.slice(0, 8).map(k => h`<li><strong>${k.x.p.nombre}</strong><span class="compra-consejo ${k.c.tipo}">${k.c.texto}</span></li>`)}</ul>
@@ -4314,7 +4665,9 @@ const Cerca = (() => {
       caja.innerHTML = val(h`<div class="vacio">
         ${E.conexion === 'esperando' || (E.conexion === 'lista' && !E.prodListo) ? cargando('Cargando lo guardado…') : ''}
         <h3>Acá va tu alacena</h3>
-        <p>Cada producto con cuánto queda y para cuántos días alcanza según lo que se consume en casa. Para cargar el primero, tocá <strong>Escanear producto</strong> y ${Datos.camaraEnVivo ? 'apuntá la cámara a su código de barras' : 'sacale una foto al envase o al código de barras'}.</p></div>`);
+        <p>Cada producto con cuánto queda y para cuántos días alcanza según lo que se consume en casa.</p>
+        <div class="acciones" data-escribe><button type="button" class="btn btn-principal" data-act="arranque">✓ Empezar rápido: ¿qué hay en tu casa?</button></div>
+        <p class="tenue chico">Tildás los básicos en un minuto. También podés tocar <strong>Escanear producto</strong> y ${Datos.camaraEnVivo ? 'apuntar la cámara a su código de barras' : 'sacarle una foto al envase o al código de barras'}.</p></div>`);
       return;
     }
     const q = filas.length < 6 ? '' : N.norm(E.filtro.texto), chip = E.filtro.chip;
@@ -4687,7 +5040,7 @@ const Cerca = (() => {
         else if (a.modo === 'compra') l.push(h`<span>Sin consumo anotado: se estima por las compras, <strong>cada ~${Math.max(1, Math.round(a.cadaDias))} días</strong>.</span>`);
         else l.push(h`<span>Todavía no hay datos de consumo. Se aprende solo de cada cuánto lo comprás; si querés, tocá − en la alacena cuando se termina uno.</span>`);
         l.push(h`<span class="acciones"><button type="button" class="btn btn-chico${a.pedido ? '' : ' btn-principal'}" data-act="pedir" data-id="${H.id}" data-escribe>${a.pedido ? 'Sacar de la lista' : 'Anotar en la lista'}</button></span>`);
-        dato = h`<div class="dato">${l}</div>${bloquePrecios(H.id, p)}`;
+        dato = h`<div class="dato">${l}</div>${bloqueAlerta(H.id, p)}${bloquePrecios(H.id, p)}`;
       }
       const par = H.parecido ? verProd(H.parecido) : null;
       return marco(H.id ? 'Editar producto' : 'Producto nuevo', h`<form class="form" data-form="producto" novalidate>
@@ -4765,6 +5118,8 @@ const Cerca = (() => {
           ${bloqueCercaDe(H)}
           ${H.sinCodigo ? h`<div class="dato"><span>Para que la próxima vez alcance con el código de barras, ${viva ? 'escaneá' : 'sacale una foto a'} el código de este producto.</span>
             <button type="button" class="enlace" data-act="pedir-codigo">${!H.fallo ? 'Sumarle el código de barras' : viva ? 'Probar otra vez' : 'Probar con otra foto del código'}</button></div>` : ''}
+          ${H.modo === 'precio' && puedeCerca() && refDeComercio(limpio(H.comercio || '')) ? h`<div class="dato"><span>¿Ves otros precios en ${limpio(H.comercio)}? Confirmá con un toque los que cargaron otros hogares.</span>
+            <button type="button" class="enlace" data-act="confirmar" data-k="${refDeComercio(limpio(H.comercio))}">Confirmar precios de acá</button></div>` : ''}
           <div class="hoja-pie"><button type="button" class="btn" data-act="cerrar">Listo</button>
             <button type="button" class="btn btn-principal" data-act="${viva ? 'camara' : tactil ? 'foto-prod-cam' : 'foto-prod-gal'}">${ico('escanear')}Escanear otro</button></div>`);
       }
@@ -4885,6 +5240,7 @@ const Cerca = (() => {
         ${H.error ? h`<p class="error" role="alert">${H.error}</p>` : ''}
         <div class="hoja-pie" data-escribe><button type="submit" class="btn btn-principal">Guardar</button></div>
         ${puedeCerca() ? bloqueZona() : ''}
+        ${Datos.avisos && Datos.avisos.configurado() ? bloqueAvisos() : ''}
         ${typeof IA !== 'undefined' && IA.disponible() ? bloqueIA() : ''}
         ${Datos.hogar ? bloqueHogar(H) : ''}
         ${bloqueAportes()}
@@ -4973,6 +5329,25 @@ const Cerca = (() => {
     },
 
     // Cargar una promo de la zona: en qué comercio, qué descuento, qué días y con qué medio de pago.
+    arranque: vistaArranque,
+    confirmar(H) {
+      const hoy = hoyDia();
+      return marco(`¿Siguen estos precios?`, h`<div class="hoja-cuerpo">
+        <p class="tenue chico">Precios que cargaron otros hogares en <strong>${H.nombre}</strong>. Si estás ahí, confirmá con un toque si siguen igual o cuánto salen ahora: así nadie se lleva una sorpresa.</p>
+        ${H.estado === 'cargando' ? cargando('Buscando los precios de este comercio…') : H.estado === 'error' ? h`<p class="nota gris">No se pudieron traer los precios. Revisá la conexión.</p>`
+          : !H.items.length ? h`<p class="tenue">No hay precios de otros hogares para confirmar en este comercio. ¡Avisá vos uno!</p>`
+          : h`<ul class="confirmar">${H.items.map((it, i) => h`<li>
+            <div class="conf-dato"><span class="oferta-nombre">${it.d.t}</span><strong class="oferta-precio">${N.plata(it.d.p)}</strong>
+              <span class="oferta-detalle">${[A.haceDias(hoy - it.d.d), A.origen({ hogar: it.d.h, cuantos: +it.d.c || 1 })].join(' · ')}</span></div>
+            ${it.estado === 'sigue' ? h`<p class="verde chico">✓ Confirmado. ¡Gracias!</p>` : it.estado === 'cambio' ? h`<p class="verde chico">✓ Precio actualizado. ¡Gracias!</p>`
+              : it.abierto ? h`<div class="conf-nuevo"><input type="text" id="cf-${i}" data-k="items.${i}.nuevo" value="${it.nuevo}" inputmode="decimal" autocomplete="off" placeholder="$ ahora" aria-label="Precio de ahora">
+                  <button type="button" class="btn btn-chico btn-principal" data-act="conf-guardar" data-i="${i}"${atr('disabled', it.ocupado)}>Guardar</button></div>`
+              : h`<div class="acciones"><button type="button" class="btn btn-chico btn-principal" data-act="conf-sigue" data-i="${i}"${atr('disabled', it.ocupado)}>👍 Sigue igual</button>
+                  <button type="button" class="btn btn-chico" data-act="conf-cambio" data-i="${i}">Cambió</button></div>`}
+            ${it.error ? h`<p class="error">${it.error}</p>` : ''}</li>`)}</ul>`}
+        ${H.error ? h`<p class="error" role="alert">${H.error}</p>` : ''}
+        <div class="hoja-pie"><button type="button" class="btn btn-principal" data-act="cerrar">Listo</button></div></div>`);
+    },
     // ¿Qué cocino?: primero qué se busca; después, las ideas de la IA.
     cocina(H) {
       const err = H.error ? h`<p class="error" role="alert">${H.error}</p>` : '';
@@ -5120,6 +5495,24 @@ const Cerca = (() => {
         <button type="button" class="enlace rojo" data-act="hogar-borrar-cuenta">Borrar mi cuenta</button></div>`}</div>`;
   }
   // Dentro de Ajustes: si este teléfono usa la IA. Es de cada persona, no del hogar.
+  /* Las notificaciones: activarlas en este teléfono y elegir cuáles. */
+  const AVISOS_HOGAR = [['lista', 'Alguien anota algo en la lista'], ['voy', 'Alguien avisa que va al súper'], ['nota', 'Notas nuevas del hogar'], ['gasto', 'Alguien carga una compra o un gasto'], ['miembro', 'Alguien se suma al hogar'], ['resumen', 'Lo que ahorró el hogar en la semana (los domingos)']];
+  const AVISOS_ZONA = [['baratos', 'Algo que comprás está más barato cerca'], ['avisos', 'Precios que avisan en tu zona'], ['promos', 'Promos nuevas en tu zona']];
+  function bloqueAvisos() {
+    const A1 = Datos.avisos, est = A1.estado(), per = A1.permiso(), H = E.hoja || {};
+    if (!A1.soportado()) {
+      return h`<div class="dato"><p class="rotulo">Notificaciones</p><p class="tenue chico">Este navegador no permite notificaciones.${/iPhone|iPad/.test(navigator.userAgent) ? ' En iPhone: tocá Compartir → «Agregar a inicio» y abrí la libreta desde ese ícono.' : ''}</p></div>`;
+    }
+    const casilla = ([k, t]) => h`<label class="casilla"><input type="checkbox" data-cambio="aviso" data-tipo="${k}"${atr('checked', !est || est.prefs[k] !== false)}><span>${t}</span></label>`;
+    return h`<div class="dato avisos"><p class="rotulo">Notificaciones</p>
+      ${est && per === 'granted' ? h`<p class="tenue chico">Activadas en este teléfono. Llegan aunque la app esté cerrada, con unos minutos de demora.</p>
+        <p class="chico"><strong>Del hogar</strong></p>${AVISOS_HOGAR.map(casilla)}
+        ${puedeCerca() ? h`<p class="chico"><strong>De tu zona</strong></p>${AVISOS_ZONA.map(casilla)}` : ''}
+        <button type="button" class="enlace" data-act="avisos-apagar">Desactivarlas en este teléfono</button>`
+        : h`<p class="tenue chico">${per === 'denied' ? 'Están bloqueadas para esta página. Se habilitan en los permisos del navegador (el candadito junto a la dirección) y después tocás «Activar».' : 'Te avisa cuando alguien del hogar anota algo en la lista, va al súper o deja una nota, y cuando algo que comprás está más barato cerca.'}</p>
+          <div class="acciones"><button type="button" class="btn btn-chico btn-principal" data-act="avisos-activar"${atr('disabled', H.avisando)}>${H.avisando ? 'Activando…' : 'Activar notificaciones'}</button></div>`}
+      ${H.errorAvisos ? h`<p class="error" role="alert">${H.errorAvisos}</p>` : ''}</div>`;
+  }
   function bloqueIA() {
     return h`<div class="dato"><p class="rotulo">Inteligencia artificial</p>
       <label class="casilla"><input type="checkbox" id="aj-ia" data-cambio="ia"${atr('checked', iaElegida())}>
@@ -5174,7 +5567,8 @@ const Cerca = (() => {
       ${sabe && (d.direccion || d.rubro) ? h`<p class="lugar-dir">${d.direccion || d.rubro}</p>` : ''}
       ${pn.dist != null ? h`<p class="tenue chico">A ${A.distTexto(pn.dist)} de vos</p>` : ''}
       <ul class="ofertas">${pn.renglones.map(r => h`<li><span class="oferta-nombre">${r.nombre}</span><strong class="oferta-precio${r.barato ? ' verde' : ''}">${N.plata(r.precio)}</strong><span class="oferta-detalle">${r.detalle}</span></li>`)}</ul>
-      <div class="acciones"><a class="btn btn-chico" href="${C.enlace(pn.k, pn.lat, pn.lon)}" target="_blank" rel="noopener">${ico('lugar')}Cómo llegar</a></div></div>`;
+      <div class="acciones"><a class="btn btn-chico" href="${C.enlace(pn.k, pn.lat, pn.lon)}" target="_blank" rel="noopener">${ico('lugar')}Cómo llegar</a>
+        ${/^(osm|com):/.test(pn.k) ? h`<button type="button" class="btn btn-chico" data-act="confirmar" data-k="${pn.k}" data-escribe>¿Estás acá? Confirmá</button>` : ''}</div></div>`;
   }
   const filaPin = (H, pn, i) => h`<li><button type="button" class="lugar" data-act="mapa-pin" data-k="${pn.k}"${atr('aria-current="true"', pn.k === H.pin)}>
     <span class="lugar-nombre">${pn.nombre || pn.publico || (esObjeto(H.detalles[pn.k]) && H.detalles[pn.k].nombre) || `Comercio ${i + 1}`}</span><span class="lugar-dist">${pn.texto}</span>
@@ -5886,7 +6280,7 @@ const Cerca = (() => {
         }
       } catch (e) { if (E.hoja === H) errorHoja(textoFallo(e)); else falloGuardar(e); return; }
       let n = 0;
-      if (ref && E.ajustes.compartir === true && puedeCerca()) { try { n = await C.aportar([{ codigo: clave, precio, reco: 0, texto, cat: H.cat }], ref, hoyDia(), E.ajustes.alias, lugarDe(ref)); } catch (e) { n = 0; } }
+      if (ref && E.ajustes.compartir === true && puedeCerca()) { try { n = await aportarZona([{ codigo: clave, precio, reco: 0, texto, cat: H.cat }], ref, hoyDia(), E.ajustes.alias, lugarDe(ref)); } catch (e) { n = 0; } }
       if (E.hoja !== H) return;
       if (comercio) recordarComercio(comercio);
       const k = cuentaCombo(H);
@@ -5918,7 +6312,7 @@ const Cerca = (() => {
     }
     // solo el precio de algo que no está en la alacena: sirve para la zona, si el hogar comparte y el comercio está ubicado
     let n = 0;
-    if (ref && E.ajustes.compartir === true && puedeCerca()) { try { n = await C.aportar([{ codigo: clave, precio, reco: 0, texto, cat: H.cat }], ref, hoyDia(), E.ajustes.alias, lugarDe(ref)); } catch (e) { n = 0; } }
+    if (ref && E.ajustes.compartir === true && puedeCerca()) { try { n = await aportarZona([{ codigo: clave, precio, reco: 0, texto, cat: H.cat }], ref, hoyDia(), E.ajustes.alias, lugarDe(ref)); } catch (e) { n = 0; } }
     if (E.hoja !== H) return;
     cambiarHoja({ estado: 'hecho', ocupado: false, error: '', fallo: false, sinCodigo: false, cerca: null,
       texto: n ? `Precio anotado: ${nombre}, ${N.plata(precio)}${kilo ? ' el kilo' : ''} en ${comercio}. Ya lo ven los hogares de tu zona. ¡Gracias!`
@@ -5966,7 +6360,7 @@ const Cerca = (() => {
     // el precio de algo que no está en la alacena: sirve para la zona, si el hogar comparte y el comercio está ubicado
     const ref = refDeComercio(comercio);
     let n = 0;
-    if (ref && E.ajustes.compartir === true && puedeCerca()) { try { n = await C.aportar([{ codigo: H.codigo, precio, reco: 0, texto: H.info ? [H.info.nombre, H.info.marca, H.info.presentacion].filter(Boolean).join(' ').slice(0, 60) : '', cat: H.info ? H.info.categoria : '' }], ref, hoyDia(), E.ajustes.alias, lugarDe(ref)); } catch (e) { n = 0; } }
+    if (ref && E.ajustes.compartir === true && puedeCerca()) { try { n = await aportarZona([{ codigo: H.codigo, precio, reco: 0, texto: H.info ? [H.info.nombre, H.info.marca, H.info.presentacion].filter(Boolean).join(' ').slice(0, 60) : '', cat: H.info ? H.info.categoria : '' }], ref, hoyDia(), E.ajustes.alias, lugarDe(ref)); } catch (e) { n = 0; } }
     if (E.hoja !== H) return;
     if (comercio) recordarComercio(comercio);
     cambiarHoja({ estado: 'hecho', ocupado: false, error: '', fallo: false, sinCodigo: false, cerca: null,
@@ -6072,6 +6466,7 @@ const Cerca = (() => {
       } catch (e) { falla = e; }
     }
     pintar();
+    if (!falla && n && Datos.evento) Datos.evento('lista', `${miNombre()} anotó en la lista: ${r.faltan.map(f => f.n).join(', ')} (para ${r.nombre.toLowerCase()})`);
     if (falla) falloGuardar(falla);
     else avisar(`${n === 1 ? 'Quedó anotada 1 cosa' : `Quedaron anotadas ${n} cosas`} en la lista de compras`, { rotulo: 'Ver', fn: () => { cerrarHoja(); irA('compras'); } });
   }
@@ -6489,6 +6884,7 @@ const Cerca = (() => {
       return;
     }
     E.tickets = [{ id: ref.id, ...doc }].concat(E.tickets.filter(x => x.id !== ref.id)).sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)));
+    if (!H.id && !H.ejemplo && Datos.evento) Datos.evento('gasto', `${miNombre()} cargó ${doc.items.length ? 'una compra' : 'un gasto'} de ${N.plata(doc.total)}${doc.comercio && doc.comercio !== 'Compra' ? ` en ${doc.comercio}` : ''}`);
     let sumados = 0, fallidos = 0;
     const comprados = [];
     if (!H.id && comercio) recordarComercio(comercio);
@@ -6634,6 +7030,58 @@ const Cerca = (() => {
     },
     'gondola-llevo'() { guardarGondola(true); },
     'mapa-vivo'() { abrirMapaZona(); },
+    arranque() { if (puede()) abrirHoja({ tipo: 'arranque', sel: {}, ocupado: false, error: '' }); },
+    'arranque-toque'(el) {
+      const H = E.hoja;
+      if (!H || H.tipo !== 'arranque' || H.ocupado) return;
+      H.sel[el.dataset.n] = ((H.sel[el.dataset.n] || 0) + 1) % 3;
+      renderHoja();
+    },
+    'arranque-listo'() { guardarArranque(); },
+    confirmar(el) { abrirConfirmar(el.dataset.k); },
+    'conf-sigue'(el) { confirmarPrecio(+el.dataset.i, false); },
+    'conf-cambio'(el) { const H = E.hoja; if (H && H.tipo === 'confirmar') { H.items[+el.dataset.i].abierto = true; renderHoja(); const n = $('#cf-' + el.dataset.i); if (n) n.focus(); } },
+    'conf-guardar'(el) { confirmarPrecio(+el.dataset.i, true); },
+    'alerta-editar'(el) {
+      const H = E.hoja, p = E.prod.get(el.dataset.id);
+      if (!H || !p) return;
+      H.alertaEdit = true; H.alertaPrecio = p.alerta > 0 ? N.plata(p.alerta).replace(/^\$\s*/, '') : p.precio > 0 ? N.plata(Math.round(p.precio * 0.9)).replace(/^\$\s*/, '') : '';
+      renderHoja(); const n = $('#p-alerta'); if (n) n.focus();
+    },
+    'alerta-cancelar'() { if (E.hoja) { E.hoja.alertaEdit = false; renderHoja(); } },
+    'alerta-guardar'(el) {
+      const v = N.aNumero(limpio((E.hoja && E.hoja.alertaPrecio) || ''));
+      if (!(v > 0)) { avisar('Escribí un precio: por ejemplo 4.500'); return; }
+      guardarAlerta(el.dataset.id, N.redondear2(v));
+    },
+    'alerta-quitar'(el) { guardarAlerta(el.dataset.id, 0); },
+    async 'compartir-ahorro'(el) {
+      const cuando = el.dataset.cuando, m = cuando === 'semana' ? ahorroSemana() : ahorroDelMes();
+      if (!(m > 0)) return;
+      const img = await tarjetaAhorro(m, cuando);
+      compartirTexto(`${cuando === 'semana' ? 'Esta semana' : 'Este mes'} ahorré ${N.plata(m)} con la Libreta del hogar 🛒, comprando donde otros hogares del barrio encontraron mejor precio. Es gratis, sumate: ${URL_APP()}`, img);
+    },
+    'invitar-barrio'() {
+      const B = E.barrio || {};
+      compartirTexto(B.precios > 5
+        ? `En nuestro barrio ya hay ${B.precios} precios cargados por vecinos en la Libreta del hogar 🛒: dónde está más barato cada cosa, promos del día y combos. Es gratis, sumate y compartamos precios: ${URL_APP()}`
+        : `Estoy usando la Libreta del hogar 🛒: entre vecinos nos pasamos dónde está más barato cada cosa del barrio. Es gratis, sumate así juntamos precios: ${URL_APP()}`);
+    },
+    async 'avisos-activar'() {
+      const H = E.hoja;
+      if (!H || H.tipo !== 'ajustes' || H.avisando) return;
+      H.avisando = true; H.errorAvisos = ''; renderHoja();
+      try { await Datos.avisos.activar(); } catch (e) { if (E.hoja === H) H.errorAvisos = (e && e.texto) || 'No se pudieron activar. Probá de nuevo.'; }
+      if (E.hoja !== H) return;
+      H.avisando = false; renderHoja();
+      if (!H.errorAvisos) { if (!E.ajustes.avisos) cambiarAjustes({ avisos: true }).catch(() => {}); avisar('Notificaciones activadas en este teléfono'); const pos = C.ultimaPosicion(); try { localStorage.removeItem('libreta.pushZona'); } catch (e) { /* sin almacenamiento */ } if (pos) zonaParaAvisos(pos); }
+    },
+    async 'avisos-apagar'() {
+      const H = E.hoja;
+      await Datos.avisos.desactivar();
+      if (E.hoja === H) renderHoja();
+      avisar('Notificaciones desactivadas en este teléfono');
+    },
     // avisarle a la zona un precio, de lo que sea y en cualquier comercio
     'avisar-precio'() {
       if (!puede()) return;
@@ -6664,7 +7112,7 @@ const Cerca = (() => {
     async 'voy-al-super'() {
       if (!puede() || !Datos.notas) return;
       const c = ultimoComercio();
-      try { await Datos.notas.agregar(`Voy a hacer las compras${c ? ` (${c})` : ''}. Si falta algo, anotalo en la lista.`, 1); avisar('Listo: tu familia ve el aviso en Notas'); }
+      try { await Datos.notas.agregar(`Voy a hacer las compras${c ? ` (${c})` : ''}. Si falta algo, anotalo en la lista.`, 1, 'voy'); avisar('Listo: tu familia ve el aviso en Notas'); }
       catch (e) { avisar((e && e.texto) || textoFallo(e)); }
       pintar();
     },
@@ -6676,7 +7124,10 @@ const Cerca = (() => {
       E.prod.set(id, { ...p, pedido });
       el.textContent = pedido ? 'Sacar de la lista' : 'Anotar en la lista';
       el.classList.toggle('btn-principal', !pedido);
-      enCola(id, () => escribir(() => E.db.doc('productos/' + id).update({ pedido }))).then(() => avisar(pedido ? `${p.nombre}: anotado en la lista de compras` : `${p.nombre}: salió de la lista`), falloGuardar);
+      enCola(id, () => escribir(() => E.db.doc('productos/' + id).update({ pedido }))).then(() => {
+        avisar(pedido ? `${p.nombre}: anotado en la lista de compras` : `${p.nombre}: salió de la lista`);
+        if (pedido && Datos.evento) Datos.evento('lista', `${miNombre()} anotó en la lista: ${p.nombre}`);
+      }, falloGuardar);
       pintar();
     },
     // las promos
@@ -6978,7 +7429,7 @@ const Cerca = (() => {
       try { await cambiarAjustes({ compartir: true }); } catch (e) { falloGuardar(e); return; }
       E.porCompartir = null;
       let n = 0;
-      if (pend) { try { n = await C.aportar(pend.items, pend.ref, pend.dia, E.ajustes.alias, lugarDe(pend.ref)); } catch (e) { n = 0; } }
+      if (pend) { try { n = await aportarZona(pend.items, pend.ref, pend.dia, E.ajustes.alias, lugarDe(pend.ref)); } catch (e) { n = 0; } }
       if (n) E.cerca.t = 0;
       if (H && E.hoja === H && H.cerca) { H.cerca.preguntar = false; H.cerca.compartidos = n; renderHoja(); }
       else avisar(n ? `Listo: ${n === 1 ? 'el precio que anotaste ya lo ve' : `los ${n} precios que anotaste ya los ve`} tu zona` : 'Listo: los precios que anotes se comparten con tu zona');
@@ -7100,6 +7551,10 @@ const Cerca = (() => {
     const el = e.target;
     if (el.dataset && 'suelto' in el.dataset && E.hoja && E.hoja.estado === 'suelto') { actualizarSuelto(E.hoja); return; }
     if (el.dataset && 'combo' in el.dataset && E.hoja && E.hoja.estado === 'suelto') { E.hoja.clave = null; actualizarSuelto(E.hoja); return; }
+    if (el.dataset && el.dataset.cambio === 'aviso') {      // qué notificaciones: vale para este teléfono
+      Datos.avisos.preferencias({ [el.dataset.tipo]: el.checked }).catch(falloGuardar);
+      return;
+    }
     if (el.dataset && el.dataset.cambio === 'ia') {      // usar o no la IA: vale para este teléfono
       try { if (el.checked) localStorage.removeItem(CLAVE_IA); else localStorage.setItem(CLAVE_IA, 'no'); } catch (x) { /* sin almacenamiento */ }
       pintar();

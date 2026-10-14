@@ -41,6 +41,15 @@ const inteligencia = {
   rapido: "gemini-3.1-flash-lite"      // para las comidas: contesta en segundos
 };
 
+/* Notificaciones (optativo): Firebase Cloud Messaging.
+
+   «vapid» es la clave pública de los certificados push web (consola de Firebase → Configuración del proyecto →
+   Cloud Messaging → Configuración web → Generate key pair). Los avisos los manda la tarea «Avisos» de GitHub
+   (.github/workflows/avisos.yml), que necesita el secret FIREBASE_SA. Vacía, no se ofrecen notificaciones. */
+const notificaciones = {
+  vapid: "BEO9GzF9HqGFx0sH1eukKymBGL_ttadBeqYtTAg1XXuK13n8xwafBnnXCNfTtvqyecKOwokSldrXtRz5zhLENFA"
+};
+
 /* Aportes voluntarios (optativo).
 
    Si ponés un link de pago de Mercado Pago o tu alias, Ajustes invita a apoyar la libreta con un aporte.

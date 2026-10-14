@@ -1,0 +1,231 @@
+rules_version = '2';
+
+// Reglas de seguridad de la Libreta del hogar.
+//
+// Cada persona entra con su cuenta de Google. Los datos de un hogar solo los puede leer y escribir quien
+// figure entre sus integrantes. Para sumarse a un hogar hace falta una invitación: un código de 8 letras
+// que crea alguien que ya es integrante, que vale 15 minutos y que se gasta (se borra) en la misma
+// operación en que se usa.
+//
+// Aparte están los precios que los hogares eligen compartir con su zona: no llevan cuentas, emails ni nombres
+// de personas (a lo sumo el nombre público que el hogar eligió), los puede leer cualquiera que haya entrado con
+// su cuenta y solo se aceptan si tienen la forma esperada. Y los comercios que los hogares marcan en el mapa
+// cuando no figuran en OpenStreetMap.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function conSesion() {
+      return request.auth != null;
+    }
+
+    // ¿Esta persona ya figura entre los integrantes del hogar?
+    function esMiembro(hogar) {
+      return conSesion()
+        && exists(/databases/$(database)/documents/hogares/$(hogar)/miembros/$(request.auth.uid));
+    }
+
+    function invitacion(codigo) {
+      return get(/databases/$(database)/documents/invitaciones/$(codigo)).data;
+    }
+
+    function invitacionVale(codigo, hogar) {
+      return invitacion(codigo).hogar == hogar
+        && request.time < invitacion(codigo).creada + duration.value(15, 'm');
+    }
+
+    // Lo que cada cuenta anota de sí misma: su nombre y en qué hogar está (para volver a él desde otro teléfono).
+    match /usuarios/{uid} {
+      allow get, create, update, delete: if conSesion() && uid == request.auth.uid;
+    }
+
+    match /hogares/{hogar} {
+      allow get: if esMiembro(hogar);
+      allow create: if conSesion() && request.resource.data.creador == request.auth.uid;
+      allow update: if esMiembro(hogar) && request.resource.data.creador == resource.data.creador;
+      allow delete: if esMiembro(hogar);
+
+      // Un documento por integrante del hogar.
+      match /miembros/{uid} {
+        // Cada persona puede mirar su propio lugar (así sabe si la quitaron); la lista, solo los integrantes.
+        allow get: if esMiembro(hogar) || (conSesion() && uid == request.auth.uid);
+        allow list: if esMiembro(hogar);
+        // Se anota quien crea el hogar, en la misma operación en que lo crea; o, si el hogar ya existe,
+        // quien trae una invitación vigente para ese hogar y la borra en la misma operación.
+        allow create: if conSesion()
+          && uid == request.auth.uid
+          && (
+            (!exists(/databases/$(database)/documents/hogares/$(hogar))
+              && getAfter(/databases/$(database)/documents/hogares/$(hogar)).data.creador == request.auth.uid)
+            || (exists(/databases/$(database)/documents/hogares/$(hogar))
+              && request.resource.data.codigo is string
+              && invitacionVale(request.resource.data.codigo, hogar)
+              && !existsAfter(/databases/$(database)/documents/invitaciones/$(request.resource.data.codigo)))
+          );
+        allow update: if esMiembro(hogar) && uid == request.auth.uid;
+        allow delete: if esMiembro(hogar);
+      }
+
+      match /productos/{producto} {
+        allow read, write: if esMiembro(hogar);
+      }
+
+      // Los tickets, juntos por mes.
+      match /meses/{mes} {
+        allow read, write: if esMiembro(hogar);
+      }
+
+      // Las notas que se dejan entre integrantes.
+      match /notas/{nota} {
+        allow read, write: if esMiembro(hogar);
+      }
+    }
+
+    // Invitaciones para sumar a alguien. Solo se pueden leer de a una y sabiendo el código.
+    match /invitaciones/{codigo} {
+      allow get: if conSesion();
+      allow create: if conSesion()
+        && codigo.size() == 8
+        && request.resource.data.keys().hasOnly(['hogar', 'por', 'creada'])
+        && request.resource.data.por == request.auth.uid
+        && request.resource.data.creada == request.time
+        && esMiembro(request.resource.data.hogar);
+      // La borra quien la creó, cualquier integrante de su hogar, o quien entra con ella en esta misma operación.
+      allow delete: if conSesion()
+        && (resource.data.por == request.auth.uid
+          || esMiembro(resource.data.hogar)
+          || existsAfter(/databases/$(database)/documents/hogares/$(resource.data.hogar)/miembros/$(request.auth.uid)));
+    }
+
+    // Precios compartidos entre hogares: el precio de un producto (por su código de barras) en un comercio, en una zona.
+    //   z zona · e código de barras · ze = z_e · k comercio ('osm:n123' de OpenStreetMap, 'com:<id>' marcado por
+    //   un hogar) · n su nombre público · p precio · d día de la compra · c cuántas veces se confirmó · la, lo dónde
+    //   queda el comercio · v día hasta el que vale (30 días como mucho) · x el momento desde el que se puede borrar
+    //   solo (dos días después de v) · h el nombre público del hogar que lo cargó ('' si no eligió ninguno) ·
+    //   qs, qn cuántos hogares recomiendan o no ese producto
+    // Los días van como «días desde 1970»; se comparan con la hora del servidor con margen, porque el día
+    // lo cuenta cada teléfono según su huso horario.
+    // Para que los vencidos se borren solos aunque nadie pase por esa zona, en la consola de Google Cloud se
+    // puede crear una regla de «tiempo de vida» (TTL) para la colección `precios` con el campo `x`.
+    function contador(d, campo) {
+      return !(campo in d) || (d[campo] is int && d[campo] >= 0 && d[campo] <= 9999);
+    }
+    match /precios/{id} {
+      allow read: if conSesion();
+      allow create, update: if conSesion()
+        && request.resource.data.keys().hasOnly(['z', 'e', 'ze', 'k', 'p', 'd', 'c', 'la', 'lo', 'v', 'x', 'n', 'h', 'qs', 'qn', 't', 'g', 'ts'])
+        && request.resource.data.keys().hasAll(['z', 'e', 'ze', 'k', 'p', 'd', 'c', 'la', 'lo', 'v', 'x', 'n'])
+        && request.resource.data.z is string && request.resource.data.z.matches('^[0-9]{1,4}x[0-9]{1,4}$')
+        && request.resource.data.e is string && request.resource.data.e.matches('^([0-9]{8,14}|n-[a-z0-9-]{2,40})$')
+        // `t`: el nombre del producto, para buscarlo; sin código de barras («n-…») es obligatorio
+        && (request.resource.data.e.matches('^[0-9]{8,14}$') ? !('t' in request.resource.data) || request.resource.data.t is string : 't' in request.resource.data)
+        && (!('t' in request.resource.data) || (request.resource.data.t is string && request.resource.data.t.size() >= 2 && request.resource.data.t.size() <= 60))
+        // `g`: su categoría (almacen, frescos, carnes…) · `ts`: cuándo se anotó, para los avisos
+        && (!('g' in request.resource.data) || (request.resource.data.g is string && request.resource.data.g.matches('^[a-z]{3,12}$')))
+        && (!('ts' in request.resource.data) || request.resource.data.ts == request.time)
+        && request.resource.data.k is string && request.resource.data.k.matches('^(osm:[nwr][0-9]{1,15}|com:[A-Za-z0-9]{6,40})$')
+        && request.resource.data.ze == request.resource.data.z + '_' + request.resource.data.e
+        && id == request.resource.data.ze + '_' + request.resource.data.k
+        && request.resource.data.n is string && request.resource.data.n.size() >= 1 && request.resource.data.n.size() <= 60
+        && (!('h' in request.resource.data) || (request.resource.data.h is string && request.resource.data.h.size() <= 40))
+        && contador(request.resource.data, 'qs') && contador(request.resource.data, 'qn')
+        && request.resource.data.p is number && request.resource.data.p > 0 && request.resource.data.p < 1000000000
+        && request.resource.data.d is int
+        && request.resource.data.d * 86400000 >= request.time.toMillis() - 5 * 86400000
+        && request.resource.data.d * 86400000 <= request.time.toMillis() + 86400000
+        && request.resource.data.v is int
+        && request.resource.data.v >= request.resource.data.d
+        && request.resource.data.v <= request.resource.data.d + 30
+        && request.resource.data.x is timestamp
+        && request.resource.data.x.toMillis() == (request.resource.data.v + 2) * 86400000
+        && request.resource.data.c is int && request.resource.data.c >= 1 && request.resource.data.c <= 9999
+        && request.resource.data.la is number && request.resource.data.la >= -90 && request.resource.data.la <= 90
+        && request.resource.data.lo is number && request.resource.data.lo >= -180 && request.resource.data.lo <= 180;
+      // Uno vencido lo puede borrar cualquiera: así no queda guardado más tiempo del debido.
+      allow delete: if conSesion() && resource.data.v * 86400000 < request.time.toMillis() - 2 * 86400000;
+    }
+
+    // Comercios que marcan los hogares cuando no figuran en OpenStreetMap: nombre, dónde queda y rubro. No dicen
+    // quién los marcó; una vez creados no se cambian.
+    //   z zona · n nombre · la, lo dónde queda · r rubro · t cuándo se marcó
+    match /comercios/{id} {
+      allow read: if conSesion();
+      allow create: if conSesion()
+        && request.resource.data.keys().hasOnly(['z', 'n', 'la', 'lo', 'r', 't'])
+        && request.resource.data.keys().hasAll(['z', 'n', 'la', 'lo', 't'])
+        && id.matches('^[A-Za-z0-9]{6,40}$')
+        && request.resource.data.z is string && request.resource.data.z.matches('^[0-9]{1,4}x[0-9]{1,4}$')
+        && request.resource.data.n is string && request.resource.data.n.size() >= 1 && request.resource.data.n.size() <= 60
+        && (!('r' in request.resource.data) || (request.resource.data.r is string && request.resource.data.r.size() <= 30))
+        && request.resource.data.la is number && request.resource.data.la >= -90 && request.resource.data.la <= 90
+        && request.resource.data.lo is number && request.resource.data.lo >= -180 && request.resource.data.lo <= 180
+        && request.resource.data.t == request.time;
+    }
+
+    // Promociones que cargan los hogares (por día, banco o billetera). No dicen quién las cargó, salvo el nombre
+    // público del hogar si eligió uno; duran hasta el día que dice la promo (dos meses como mucho).
+    //   z zona · k comercio · n su nombre · t texto · m medio de pago · pct porcentaje · dias de la semana (0 domingo)
+    //   hasta último día · x desde cuándo se puede borrar sola · d día en que se cargó · la, lo dónde queda · h hogar
+    match /promos/{id} {
+      allow read: if conSesion();
+      allow create: if conSesion()
+        && request.resource.data.keys().hasOnly(['z', 'k', 'n', 't', 'm', 'pct', 'dias', 'hasta', 'x', 'd', 'la', 'lo', 'h', 'ts'])
+        && (!('ts' in request.resource.data) || request.resource.data.ts == request.time)
+        && request.resource.data.keys().hasAll(['z', 'k', 'n', 't', 'm', 'pct', 'dias', 'hasta', 'x', 'd', 'la', 'lo', 'h'])
+        && id.matches('^[A-Za-z0-9]{6,40}$')
+        && request.resource.data.z is string && request.resource.data.z.matches('^[0-9]{1,4}x[0-9]{1,4}$')
+        && request.resource.data.k is string && request.resource.data.k.matches('^(osm:[nwr][0-9]{1,15}|com:[A-Za-z0-9]{6,40})$')
+        && request.resource.data.n is string && request.resource.data.n.size() >= 1 && request.resource.data.n.size() <= 60
+        && request.resource.data.t is string && request.resource.data.t.size() >= 3 && request.resource.data.t.size() <= 120
+        && request.resource.data.m is string && request.resource.data.m.size() <= 40
+        && request.resource.data.h is string && request.resource.data.h.size() <= 40
+        && request.resource.data.pct is int && request.resource.data.pct >= 0 && request.resource.data.pct <= 80
+        && request.resource.data.dias is list && request.resource.data.dias.size() <= 7
+        && request.resource.data.d is int
+        && request.resource.data.d * 86400000 >= request.time.toMillis() - 2 * 86400000
+        && request.resource.data.d * 86400000 <= request.time.toMillis() + 86400000
+        && request.resource.data.hasta is int
+        && request.resource.data.hasta >= request.resource.data.d
+        && request.resource.data.hasta <= request.resource.data.d + 62
+        && request.resource.data.x is timestamp
+        && request.resource.data.x.toMillis() == (request.resource.data.hasta + 2) * 86400000
+        && request.resource.data.la is number && request.resource.data.la >= -90 && request.resource.data.la <= 90
+        && request.resource.data.lo is number && request.resource.data.lo >= -180 && request.resource.data.lo <= 180;
+      // Una vencida la puede borrar cualquiera.
+      allow delete: if conSesion() && resource.data.hasta * 86400000 < request.time.toMillis() - 2 * 86400000;
+    }
+
+    // Notificaciones. Cada teléfono que las activa guarda la suya (uid_n): su token de Firebase Cloud Messaging, qué
+    // avisos quiere, en qué zonas está y lo que paga por lo de su alacena. Solo la ve y la cambia su dueño; la lee
+    // la tarea que manda los avisos (con su cuenta de servicio, que no pasa por estas reglas).
+    match /suscripciones/{id} {
+      allow get, delete: if conSesion() && resource.data.uid == request.auth.uid;
+      allow create, update: if conSesion()
+        && request.resource.data.uid == request.auth.uid
+        && id.matches('^' + request.auth.uid + '_[a-z0-9]{6,30}$')
+        && request.resource.data.keys().hasOnly(['uid', 'hogar', 'token', 'prefs', 'zonas', 'claves', 'propios', 'alertas', 't'])
+        && (!('alertas' in request.resource.data) || (request.resource.data.alertas is map && request.resource.data.alertas.size() <= 100))
+        && request.resource.data.token is string && request.resource.data.token.size() <= 600
+        && request.resource.data.hogar is string && request.resource.data.hogar.size() <= 80
+        && request.resource.data.prefs is map && request.resource.data.prefs.size() <= 12
+        && request.resource.data.zonas is list && request.resource.data.zonas.size() <= 30
+        && request.resource.data.claves is map && request.resource.data.claves.size() <= 150
+        && request.resource.data.propios is list && request.resource.data.propios.size() <= 30
+        && request.resource.data.t == request.time;
+    }
+
+    // Lo que pasa en un hogar y se avisa a los demás integrantes: alguien anotó algo en la lista, va al súper, dejó
+    // una nota, cargó un gasto o se sumó. Solo si alguien del hogar activó las notificaciones. Lo escribe un
+    // integrante; la tarea de los avisos lo borra apenas lo manda.
+    match /eventos/{id} {
+      // los integrantes los pueden ver y borrar (al borrar el hogar o la cuenta no tienen que quedar)
+      allow get, list, delete: if conSesion() && esMiembro(resource.data.h);
+      allow create: if conSesion()
+        && request.resource.data.keys().hasOnly(['h', 'de', 'tipo', 'texto', 't'])
+        && request.resource.data.de == request.auth.uid
+        && request.resource.data.h is string && esMiembro(request.resource.data.h)
+        && request.resource.data.tipo in ['lista', 'voy', 'nota', 'gasto', 'miembro']
+        && request.resource.data.texto is string && request.resource.data.texto.size() <= 140
+        && request.resource.data.t == request.time;
+    }
+  }
+}
