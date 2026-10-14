@@ -1,0 +1,37 @@
+# Notificaciones de la Libreta del hogar.
+# Cada ~10 minutos mira lo nuevo en Firestore (lo que pasó en los hogares, los precios y promos de cada zona) y manda
+# los avisos con Firebase Cloud Messaging, con herramientas/avisos.js. Es gratis: corre en GitHub.
+# Necesita el secret FIREBASE_SA: el JSON de la cuenta de servicio del proyecto de Firebase (consola de Firebase →
+# Configuración del proyecto → Cuentas de servicio → Generar nueva clave privada), pegado entero en
+# GitHub → Settings → Secrets and variables → Actions → New repository secret, con el nombre FIREBASE_SA.
+# GitHub puede demorar unos minutos cada vuelta, y pausa las tareas programadas de un repositorio sin cambios en
+# 60 días: si pasa, se reactiva desde la pestaña Actions.
+name: Avisos
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: avisos
+  cancel-in-progress: false
+
+jobs:
+  avisos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: herramientas
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Mandar los avisos
+        env:
+          FIREBASE_SA: ${{ secrets.FIREBASE_SA }}
+        run: node herramientas/avisos.js
