@@ -2142,6 +2142,20 @@ const Datos = (() => {
       }
       return out;
     },
+    /* En vivo: todos los de esas zonas, cada vez que cambian (el mapa de la zona). `alCambiar(docs)` recibe la lista
+       entera de cada tanda de 30 zonas juntas. Devuelve la función para dejar de escuchar. */
+    escuchar(zonas, alCambiar, alFallar) {
+      const { fs, db: base } = F, partes = [], bajas = [];
+      for (let i = 0; i < zonas.length; i += 30) {
+        const j = partes.length;
+        partes.push([]);
+        bajas.push(fs.onSnapshot(fs.query(fs.collection(base, 'precios'), fs.where('z', 'in', zonas.slice(i, i + 30)), fs.limit(500)), s => {
+          partes[j] = s.docs.map(d => Object.assign({ id: d.id }, d.data()));
+          alCambiar([].concat(...partes));
+        }, e => { if (alFallar) alFallar(e); }));
+      }
+      return () => { for (const b of bajas) { try { b(); } catch (e) { /* ya estaba cerrado */ } } };
+    },
     // claves: ['zona_código', …]. Devuelve [{ id, z, e, k, p, d, c, la, lo, v, x }].
     async buscar(claves) {
       const { fs, db: base } = F, out = [];
@@ -2302,7 +2316,7 @@ const Datos = (() => {
       sinConexion: 'No se pudo abrir la conexión con el servidor. Revisá internet y recargá la página.',
       donde: 'Los datos de este hogar se guardan en Firebase, un servicio de Google, y los ven solo sus integrantes. Cada teléfono guarda una copia para seguir andando sin conexión. Las fotos de los tickets quedan en el teléfono donde se cargaron.',
       fallo: 'No se pudo guardar. Revisá la conexión y probá de nuevo.',
-      version: 'Libreta del hogar · versión 2.4.1 (2026-10-13)',       // el número y la fecha los pone armar.js
+      version: 'Libreta del hogar · versión 2.5.0 (2026-10-14)',       // el número y la fecha los pone armar.js
     },
     /* Devuelve { db, permiso } si en este teléfono ya hay una cuenta con su hogar. Si no, { puerta, alEntrar }:
        la app muestra la entrada y `alEntrar` se cumple cuando se entra a un hogar. null: sin conexión. */
@@ -3120,17 +3134,19 @@ const Cerca = (() => {
       try { mapa.touchZoomRotate.disableRotation(); } catch (e) { /* sin gestos táctiles */ }
       mapa.addControl(new ml.NavigationControl({ showCompass: false }), 'top-right');
       const marcas = new Map();
-      for (const p of pines) {
+      let elegido = null;
+      const marcar = p => {
         const caja = document.createElement('div'), b = document.createElement('button');
-        caja.className = 'marca';
+        caja.className = 'marca' + (p.k === elegido ? ' elegido' : '');
         b.type = 'button';
-        b.className = 'pin' + (p.tono ? ' ' + p.tono : '');
+        b.className = 'pin' + (p.tono ? ' ' + p.tono : '') + (p.k === elegido ? ' elegido' : '');
         b.textContent = p.texto;
         b.dataset.k = p.k;
         b.addEventListener('click', ev => { ev.stopPropagation(); if (op.alTocar) op.alTocar(p.k); });
         caja.appendChild(b);
-        marcas.set(p.k, { caja, b, m: new ml.Marker({ element: caja, anchor: 'bottom' }).setLngLat([p.lon, p.lat]).addTo(mapa), lat: p.lat, lon: p.lon });
-      }
+        marcas.set(p.k, { caja, b, m: new ml.Marker({ element: caja, anchor: 'bottom' }).setLngLat([p.lon, p.lat]).addTo(mapa), lat: p.lat, lon: p.lon, texto: p.texto, tono: p.tono || '' });
+      };
+      for (const p of pines) marcar(p);
       let marcaYo = null;
       if (yo) {
         const s = document.createElement('span');
@@ -3152,7 +3168,25 @@ const Cerca = (() => {
       // si el mapa de fondo no carga (sin internet), quedan los carteles sobre gris y abajo la lista
       mapa.on('error', () => { el.classList.add('sin-fondo'); });
       return {
+        // Cambia los carteles por otros (el mapa en vivo): saca los que ya no están, actualiza los que cambiaron y suma los nuevos.
+        poner(nuevos) {
+          const quedan = new Set();
+          for (const p of nuevos || []) {
+            if (!A.puntoValido(p.lat, p.lon)) continue;
+            quedan.add(p.k);
+            const x = marcas.get(p.k);
+            if (x && x.lat === p.lat && x.lon === p.lon) {
+              if (x.texto !== p.texto) { x.b.textContent = p.texto; x.texto = p.texto; }
+              if (x.tono !== (p.tono || '')) { x.b.className = 'pin' + (p.tono ? ' ' + p.tono : '') + (p.k === elegido ? ' elegido' : ''); x.tono = p.tono || ''; }
+              continue;
+            }
+            if (x) { x.m.remove(); marcas.delete(p.k); }
+            marcar(p);
+          }
+          for (const [k, x] of [...marcas]) if (!quedan.has(k)) { x.m.remove(); marcas.delete(k); }
+        },
         elegir(k, mover) {
+          elegido = k;
           for (const [id, x] of marcas) { x.b.classList.toggle('elegido', id === k); x.caja.classList.toggle('elegido', id === k); }
           const x = marcas.get(k);
           if (x && mover) mapa.easeTo({ center: [x.lon, x.lat] });
@@ -4159,7 +4193,9 @@ const Cerca = (() => {
           ${B.promos.length ? h`<p><strong>Promos que coinciden:</strong></p><ul class="ofertas">${B.promos.map(filaPromo)}</ul>` : ''}
           <p class="tenue chico">Los cargaron hogares de tu zona${B.precios.length ? ', del más barato al más caro' : ''}. Pueden haber cambiado.</p>`;
     }
-    return h`<div class="bloque buscador-cerca"><h2 class="bloque-t">Buscar precios cerca</h2>
+    return h`<div class="bloque buscador-cerca"><h2 class="bloque-t">Precios de tu zona</h2>
+      <div class="acciones"><button type="button" class="btn btn-principal" data-act="avisar-precio" data-escribe>${ico('mas')}Avisar un precio</button>
+        <button type="button" class="btn" data-act="mapa-vivo">${ico('mapa')}Mapa en vivo</button></div>
       <form class="buscador" data-form="buscar-cerca" role="search"><label class="buscar">${ico('buscar')}<input type="search" id="bc-q" value="${E.buscaEscrito != null ? E.buscaEscrito : B.q || ''}" placeholder="Pizzeta, jamón, tomate…" enterkeyhint="search" autocomplete="off" maxlength="60" aria-label="Qué producto buscás"></label>
         <button type="submit" class="btn btn-principal">Buscar</button></form>
       <div id="bc-res" aria-live="polite">${res}</div></div>`;
@@ -4569,6 +4605,7 @@ const Cerca = (() => {
     if (H.ctl) { try { H.ctl.abort(); } catch (e) { /* ya estaba cancelado */ } }
     for (const u of H.urls || []) URL.revokeObjectURL(u);
     for (const x of [H, H.sub]) if (x && x.mapa) { try { x.mapa.destruir(); } catch (e) { /* el mapa ya no estaba */ } x.mapa = null; }
+    for (const x of [H, H.sub]) if (x && x.alSoltar) { try { x.alSoltar(); } catch (e) { /* ya no escuchaba */ } x.alSoltar = null; }
     if (H.sub) clearTimeout(H.sub.reloj);
   }
   function abrirHoja(estado) {
@@ -4601,8 +4638,16 @@ const Cerca = (() => {
     const X = H.sub || H;
     if (X.tipo === 'mapa' && X.mapa) { pintarFichaMapa(X); return; }      // el mapa no se redibuja: cada vez sería abrirlo de nuevo
     if (X.tipo === 'comercio' && X.paso === 'marcar' && X.mapa) return;     // el de marcar un comercio, tampoco
+    // si se redibuja mientras alguien escribe (llegaron los precios de la zona), el cursor sigue donde estaba
+    const ae = document.activeElement, foco = !arriba && ae && ae.id && el.contains(ae) ? ae.id : '';
+    let sel = null;
+    try { if (foco && ae.selectionStart != null) sel = [ae.selectionStart, ae.selectionEnd]; } catch (e) { sel = null; }
     el.innerHTML = val(VISTAS[X.tipo](X, H));
     if (arriba) { el.scrollTop = 0; el.focus({ preventScroll: true }); }
+    else if (foco) {
+      const n = document.getElementById(foco);
+      if (n && el.contains(n)) { n.focus({ preventScroll: true }); try { if (sel) n.setSelectionRange(sel[0], sel[1]); } catch (e) { /* no es de texto */ } }
+    }
   }
   function errorHoja(texto, idCampo) {
     const H = E.hoja;
@@ -4971,6 +5016,16 @@ const Cerca = (() => {
 
     // El mapa con los precios de la zona. Se dibuja una sola vez; después cambia solo la ficha de abajo.
     mapa(H) {
+      if (H.vivo) {
+        return marco('Precios de tu zona', h`<div class="hoja-cuerpo">
+          <label class="buscar">${ico('buscar')}<input type="search" id="mz-filtro" value="${H.filtro}" placeholder="Filtrar: pollo, pan, yerba…" autocomplete="off" maxlength="60" aria-label="Filtrar los precios del mapa"></label>
+          <p class="tenue chico en-vivo" id="mz-estado" aria-live="polite">${estadoZonaVivo(H)}</p>
+          <div class="mapa" id="mapa">${cargando('Abriendo el mapa…')}</div>
+          <div id="mapa-ficha" class="mapa-ficha" aria-live="polite">${fichaMapa(H)}</div>
+          <ul class="lugares" id="mapa-lista">${H.pines.map((pn, i) => filaPin(H, pn, i))}</ul>
+          <div class="hoja-pie"><button type="button" class="btn" data-act="cerrar">Cerrar</button>
+            <button type="button" class="btn btn-principal" data-act="avisar-precio" data-escribe>${ico('mas')}Avisar un precio</button></div></div>`);
+      }
       return marco(H.titulo || 'Precios cerca', h`<div class="hoja-cuerpo">
         ${H.bajada ? h`<p class="tenue chico">${H.bajada}</p>` : ''}
         <div class="mapa${H.pines.length ? '' : ' sin-mapa'}" id="mapa">${H.pines.length ? cargando('Abriendo el mapa…') : h`<p class="tenue">Todavía no hay precios para mostrar en el mapa. Aparecen cuando alguien de tu zona, o vos, anota un precio con el comercio ubicado.</p>`}</div>
@@ -5118,7 +5173,8 @@ const Cerca = (() => {
     <span class="lugar-dir">${[pn.dist != null ? `a ${A.distTexto(pn.dist)}` : '', pn.renglones.slice(0, 3).map(r => r.nombre).join(', ') + (pn.renglones.length > 3 ? '…' : '')].filter(Boolean).join(' · ')}</span></button></li>`;
   const mapaActual = () => { const H = E.hoja, X = H && (H.sub || H); return X && X.tipo === 'mapa' ? X : null; };
   function pintarFichaMapa(H) {
-    const f = $('#mapa-ficha'), l = $('#mapa-lista');
+    const f = $('#mapa-ficha'), l = $('#mapa-lista'), est = $('#mz-estado');
+    if (est && H.vivo) est.innerHTML = val(estadoZonaVivo(H));
     if (f) f.innerHTML = val(fichaMapa(H));
     if (l) l.innerHTML = val(H.pines.map((pn, i) => filaPin(H, pn, i)));
   }
@@ -5154,6 +5210,75 @@ const Cerca = (() => {
       if (el) { el.classList.add('sin-mapa'); el.innerHTML = val(h`<p class="nota gris">${(e && e.texto) || 'No se pudo abrir el mapa.'} Abajo está la lista de comercios.</p>`); }
     }
   }
+  /* ---------- el mapa de la zona, en vivo ----------
+     Todos los precios que cargaron los hogares cerca, como carteles en el mapa. Escucha a Firestore: cuando otro hogar
+     avisa un precio, su cartel aparece (resaltado) sin recargar. Se puede filtrar escribiendo. */
+  const pinMapa = x => ({ k: x.k, lat: x.lat, lon: x.lon, texto: x.texto, tono: x.tono });
+  function estadoZonaVivo(H) {
+    if (H.estado === 'error') return h`<span class="rojo">${H.error || 'No se pudo conectar con los precios de la zona.'}</span>`;
+    if (H.estado !== 'vivo') return 'Conectando…';
+    const n = H.pines.reduce((s, pn) => s + pn.renglones.length, 0);
+    return h`<span class="punto-vivo" aria-hidden="true"></span>En vivo · ${n ? `${n} ${N.plural(n, 'precio', 'precios')}${H.filtro && N.raices(H.filtro).length ? ' que coinciden' : ''} en ${H.pines.length} ${N.plural(H.pines.length, 'comercio', 'comercios')}` : H.filtro ? 'nada coincide con lo que escribiste' : 'todavía nadie cargó precios cerca: ¡avisá el primero!'}`;
+  }
+  function pinesZona(H) {
+    const hoy = hoyDia(), q = N.raices(H.filtro || ''), m = new Map();
+    for (const d of H.docs) {
+      if (!(d.v >= hoy) || !(d.d <= hoy + 1) || !(d.p > 0) || typeof d.t !== 'string' || !A.puntoValido(d.la, d.lo)) continue;
+      if (q.length && !N.coincide(q, d.t) && !(d.g && N.CATS[d.g] && N.coincide(q, N.CATS[d.g]))) continue;
+      const dist = A.distancia(H.pos.lat, H.pos.lon, d.la, d.lo);
+      if (dist > C.RADIO_ZONA) continue;
+      const pn = m.get(d.k) || { k: d.k, lat: d.la, lon: d.lo, dist, nombre: nombreDeRef(d.k), publico: typeof d.n === 'string' ? d.n : '', renglones: [], baratos: 0 };
+      pn.renglones.push({ nombre: d.t, precio: +d.p, barato: false, dia: +d.d, detalle: [A.haceDias(hoy - d.d), A.origen({ hogar: typeof d.h === 'string' ? d.h : '', cuantos: +d.c || 1 })].join(' · ') });
+      m.set(d.k, pn);
+    }
+    const pines = [...m.values()];
+    for (const pn of pines) {
+      pn.renglones.sort((a, b) => b.dia - a.dia || a.nombre.localeCompare(b.nombre, 'es'));
+      pn.tono = H.nuevos.has(pn.k) ? 'barato' : pn.nombre ? 'mio' : '';
+      pn.texto = pn.renglones.length === 1 ? N.plata(pn.renglones[0].precio) : `${pn.renglones.length} precios`;
+    }
+    return pines.sort((a, b) => (H.nuevos.has(b.k) ? 1 : 0) - (H.nuevos.has(a.k) ? 1 : 0) || a.dist - b.dist);
+  }
+  function actualizarZonaVivo(H) {
+    H.pines = pinesZona(H);
+    if (H.pin && !H.pines.some(x => x.k === H.pin)) H.pin = null;
+    if (H.mapa) H.mapa.poner(H.pines.map(pinMapa));
+    pintarFichaMapa(H);
+  }
+  function alLlegarZona(H, docs) {
+    if (mapaActual() !== H) return;
+    const firma = d => `${d.id}|${d.p}|${d.d}`, nuevos = [];
+    if (H.vistos) for (const d of docs) if (!H.vistos.has(firma(d)) && typeof d.t === 'string' && d.p > 0) nuevos.push(d);
+    H.vistos = new Set(docs.map(firma));
+    for (const d of nuevos) H.nuevos.add(d.k);
+    H.docs = docs; H.estado = 'vivo';
+    actualizarZonaVivo(H);
+    if (nuevos.length) {
+      const d = nuevos[nuevos.length - 1];
+      avisar(`Nuevo precio en tu zona: ${d.t}, ${N.plata(d.p)} en ${nombreDeRef(d.k) || d.n || 'un comercio'}`, { rotulo: 'Ver', fn: () => { if (mapaActual() === H) elegirPin(H, d.k, true); } });
+    }
+  }
+  async function abrirMapaZona() {
+    if (!puedeCerca() || !Datos.precios || !Datos.precios.escuchar) return;
+    let pos = C.ultimaPosicion();
+    if (!pos) { try { pos = await C.posicion(true); } catch (e) { avisar((e && e.texto) || 'Para ver el mapa de la zona hace falta tu ubicación.'); return; } }
+    const H = { tipo: 'mapa', vivo: true, pos, pines: [], pin: null, detalles: {}, mapa: null, filtro: '', docs: [], vistos: null, nuevos: new Set(), estado: 'conectando', error: '' };
+    abrirHoja(H);
+    try {
+      H.alSoltar = Datos.precios.escuchar(A.celdasCerca(pos.lat, pos.lon, C.RADIO_ZONA), docs => alLlegarZona(H, docs),
+        e => { H.estado = 'error'; H.error = /permission/i.test(String(e && (e.code || e.message))) ? 'Firebase no deja leer los precios de la zona: falta publicar las reglas nuevas.' : 'Se cortó la conexión con los precios de la zona. Cerrá el mapa y abrilo de nuevo.'; if (mapaActual() === H) pintarFichaMapa(H); });
+    } catch (e) { H.estado = 'error'; }
+    try {
+      const m = await C.dibujar($('#mapa'), { yo: pos, centro: pos, pines: H.pines.map(pinMapa), alTocar: k => { if (mapaActual() === H) elegirPin(H, k, false); } });
+      if (mapaActual() !== H) { m.destruir(); return; }
+      H.mapa = m;
+      m.poner(H.pines.map(pinMapa));
+    } catch (e) {
+      const el = mapaActual() === H ? $('#mapa') : null;
+      if (el) { el.classList.add('sin-mapa'); el.innerHTML = val(h`<p class="nota gris">${(e && e.texto) || 'No se pudo abrir el mapa.'} Abajo está la lista de comercios.</p>`); }
+    }
+  }
+
   // El mapa de un producto: dónde lo compró este hogar y dónde lo consiguieron otros.
   async function mapaDeProducto(id) {
     const p = verProd(id), codigo = codigoDe(p);
@@ -5568,7 +5693,8 @@ const Cerca = (() => {
   function vistaSuelto(H) {
     const d = datosGondola(H), hoy = hoyDia(), ver = veredictoGondola(H);
     const hayFilas = !!H.clave && !!(d.ult || d.mejor || d.hayZona || H.estadoZona === 'buscando' || H.estadoZona === 'sin-ubicacion');
-    return marco('Precio sin código', h`<form class="form" data-form="suelto" novalidate>
+    return marco(H.avisar ? 'Avisar un precio' : 'Precio sin código', h`<form class="form" data-form="suelto" novalidate>
+      ${H.avisar ? h`<p class="tenue chico">Lo ven al instante los hogares de tu zona, en el mapa${E.ajustes.alias ? `, como «${E.ajustes.alias}»` : ', sin tu nombre'}. ¿Tiene código de barras? <button type="button" class="enlace" data-act="gondola">Escanealo</button></p>` : ''}
       ${hayIA() ? h`<div class="ia-foto" aria-live="polite">${H.leyendo ? cargando('La IA está mirando la foto…') : h`<div class="acciones">
           <button type="button" class="btn btn-chico${H.aviso ? '' : ' btn-principal'}" data-act="suelto-foto">${ico('camara')}${H.aviso ? 'Otra foto' : 'Sacale una foto'}</button>
           <button type="button" class="enlace" data-act="suelto-galeria">o elegila de la galería</button></div>`}
@@ -5636,6 +5762,9 @@ const Cerca = (() => {
     const txt = limpio(H.precio), precio = txt ? N.aNumero(txt) : 0, comercio = limpio(H.comercio).slice(0, 60);
     if (!clave) return errorHoja('Escribí qué es: por ejemplo «Pizza de muzzarella».', 's-nombre');
     if (!(precio > 0)) return errorHoja(txt ? 'El precio no se entiende. Escribilo así: 1.450,50' : 'Escribí cuánto sale.', 'g-precio');
+    if (H.avisar && !refDeComercio(comercio)) return errorHoja(comercio ? 'Ubicá ese comercio en el mapa (el botón del pin): así el precio aparece donde corresponde.' : 'Elegí en qué comercio está (el botón del pin).', 'g-comercio');
+    if (H.avisar && E.ajustes.compartir === false) return errorHoja('Tu hogar eligió no compartir precios con la zona. Se cambia en Ajustes → «Compartir los precios que anoto».');
+    if (H.avisar && E.ajustes.compartir == null) { try { await cambiarAjustes({ compartir: true }); } catch (e) { return errorHoja(textoFallo(e)); } }
     ocupar(true);
     let id = H.id && E.prod.has(H.id) && claveNombre(textoSuelto(E.prod.get(H.id))) === clave ? H.id : productoSuelto(clave);
     try {
@@ -6374,6 +6503,13 @@ const Cerca = (() => {
       if (dedoGrueso()) elegir('in-prod-cam');
     },
     'gondola-llevo'() { guardarGondola(true); },
+    'mapa-vivo'() { abrirMapaZona(); },
+    // avisarle a la zona un precio, de lo que sea y en cualquier comercio
+    'avisar-precio'() {
+      if (!puede()) return;
+      pintarComercios(); pintarSueltos();
+      abrirHoja({ tipo: 'escanear', modo: 'precio', estado: 'suelto', avisar: true, nombre: '', clave: '', cat: 'otros', id: null, precio: '', comercio: ultimoComercio(), zona: null, estadoZona: 'sin', leyendo: false, aviso: '', error: '', ocupado: false, urls: [], ctl: new AbortController() });
+    },
     // un precio de algo sin código de barras
     'sin-codigo'() {
       if (!puede()) return;
@@ -6789,7 +6925,8 @@ const Cerca = (() => {
   document.addEventListener('input', e => {
     const el = e.target;
     if (el.id === 'al-buscar') { E.filtro.texto = el.value; renderAlacena(); return; }
-    if (el.id === 'bc-q') { E.buscaEscrito = el.value; return; }      // lo que se va escribiendo no se pierde si la pantalla se redibuja
+    if (el.id === 'bc-q') { E.buscaEscrito = el.value; return; }
+    if (el.id === 'mz-filtro') { const H = mapaActual(); if (H && H.vivo) { H.filtro = el.value; actualizarZonaVivo(H); } return; }      // lo que se va escribiendo no se pierde si la pantalla se redibuja
     if (E.puerta && el.dataset && el.dataset.p) {
       if (el.dataset.p === 'codigo') el.value = conGuion(el.value);      // se acomoda solo: mayúsculas y guion al medio
       E.puerta[el.dataset.p] = el.value;
