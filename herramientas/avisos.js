@@ -2,8 +2,8 @@
    Mira en Firestore lo nuevo desde la vez anterior y manda notificaciones con Firebase Cloud Messaging:
      · lo que pasó en un hogar (eventos/): alguien anotó algo en la lista, va al súper, dejó una nota, cargó un gasto
        o se sumó; le llega al resto de los integrantes;
-     · lo nuevo de la zona: precios (precios/, campo ts) y promos (promos/, campo ts); a cada teléfono le llegan los de
-       sus zonas, y con prioridad «más barato cerca» si es algo que su hogar compra y lo pagó más.
+     · lo nuevo de la zona: precios (precios/, campo ts; las confirmaciones, con c > 1, no) y promos (promos/, campo ts);
+       a cada teléfono le llegan los de sus zonas, y con prioridad «más barato cerca» si es algo que su hogar compra y lo pagó más.
    Cada teléfono dice qué avisos quiere en su suscripción (suscripciones/).
    Necesita la cuenta de servicio del proyecto de Firebase (el JSON entero) en la variable FIREBASE_SA, que en GitHub
    es un «secret». Sin ella no hace nada. No usa paquetes: solo Node 20.
@@ -107,6 +107,7 @@ function armar({ eventos, precios, promos, subs, resumen }) {
   }
   for (const p of precios) {
     if (typeof p.t !== 'string' || !(p.p > 0) || !(p.v >= Math.floor(Date.now() / DIA) - 1)) continue;
+    if ((+p.c || 1) > 1) continue;        // una confirmación («sigue igual»): no es un precio nuevo
     for (const s of subs) {
       if (!Array.isArray(s.zonas) || !s.zonas.includes(p.z) || (s.propios || []).includes(p._id)) continue;
       const mio = s.claves && s.claves[p.e], tope = s.alertas && s.alertas[p.e];
