@@ -2,10 +2,10 @@
    Guarda los archivos de la app en el teléfono para que abra aunque no haya conexión (en un almacén sin
    señal, por ejemplo). Los datos del hogar no pasan por acá: de esos se ocupa Firebase, que tiene su propia
    copia en el teléfono. El mapa tampoco: sin conexión no hay mapa, y la lista de comercios queda igual. */
-const CACHE = 'libreta-v15';
-const APP = ['./', 'index.html', 'estilos.css', 'app.js', 'config.js', 'manifest.webmanifest', 'privacidad.html', 'promos-bancos.json', 'iconos/icono-192.png', 'iconos/icono-512.png'];
-// De otros sitios solo se guarda lo que la app necesita para arrancar: la biblioteca de Firebase y las tipografías.
-const AJENOS = ['www.gstatic.com', 'fonts.googleapis.com', 'fonts.gstatic.com'];
+const CACHE = 'libreta-v18';
+const APP = ['./', 'index.html', 'estilos.css', 'app.js', 'config.js', 'manifest.webmanifest', 'privacidad.html', 'promos-bancos.json', 'iconos/icono-192.png', 'iconos/icono-512.png', 'iconos/logo-96.png'];
+// De otros sitios solo se guarda lo que la app necesita para arrancar (la biblioteca de Firebase y las tipografías) y las fotos de los productos.
+const AJENOS = ['www.gstatic.com', 'fonts.googleapis.com', 'fonts.gstatic.com', 'images.openfoodfacts.org'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => Promise.all(APP.map(u => c.add(u).catch(() => {})))).then(() => self.skipWaiting()));
@@ -51,7 +51,9 @@ self.addEventListener('fetch', e => {
   const pedido = e.request;
   if (pedido.method !== 'GET') return;
   const u = new URL(pedido.url);
-  if (u.origin === location.origin) e.respondWith(redOGuardado(pedido));
+  // las ilustraciones no cambian nunca: lo guardado primero (no se le pregunta al servidor por cada una)
+  if (u.origin === location.origin && u.pathname.includes('/iconos/3d/')) e.respondWith(guardadoORed(pedido));
+  else if (u.origin === location.origin) e.respondWith(redOGuardado(pedido));
   else if (AJENOS.includes(u.hostname)) e.respondWith(guardadoORed(pedido));
 });
 
@@ -71,7 +73,9 @@ self.addEventListener('notificationclick', e => {
   e.notification.close();
   const destino = new URL((e.notification.data && e.notification.data.url) || './', self.registration.scope).href;
   e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(l => {
-    const abierta = l.find(c => c.url.startsWith(self.registration.scope));
+    const abierta = l.find(c => c.url.startsWith(self.registration.scope)), d = e.notification.data || {};
+    // las que avisa la misma app (al entrar a un comercio): si está abierta, se le dice qué mostrar, sin recargarla
+    if (abierta && d.accion) { abierta.postMessage({ accion: d.accion, k: d.k || '' }); return abierta.focus(); }
     if (abierta) { abierta.navigate(destino).catch(() => {}); return abierta.focus(); }
     return self.clients.openWindow(destino);
   }));

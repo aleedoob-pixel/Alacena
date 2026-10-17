@@ -2253,9 +2253,9 @@ const Datos = (() => {
       if (t.length >= 2) dato.t = t;
       if (/^[a-z]{3,12}$/.test(r.g || '')) dato.g = r.g;
       let envio;
-      // `ts`: cuándo se anotó (lo pone el servidor), para que la tarea de los avisos sepa qué es nuevo
-      // `sinNovedad`: es la confirmación de un precio que ya estaba (no se avisa como nuevo ni es «propio»)
-      try { dato.x = F.fs.Timestamp.fromMillis((dato.v + 2) * 864e5); if (!r.sinNovedad) dato.ts = F.fs.serverTimestamp(); envio = F.fs.setDoc(F.fs.doc(F.db, 'precios', `${dato.ze}_${dato.k}`), dato); }
+      // `ts`: cuándo se anotó o se confirmó (lo pone el servidor): desde ahí se ve 24 horas; y la tarea de los avisos sabe qué es nuevo
+      // `sinNovedad`: es la confirmación de un precio que ya estaba (no es «propio»; los avisos la reconocen porque c > 1)
+      try { dato.x = F.fs.Timestamp.fromMillis((dato.v + 2) * 864e5); dato.ts = F.fs.serverTimestamp(); envio = F.fs.setDoc(F.fs.doc(F.db, 'precios', `${dato.ze}_${dato.k}`), dato); }
       catch (e) { return Promise.resolve(false); }
       if (!r.sinNovedad) try { const l = JSON.parse(localStorage.getItem('libreta.propios') || '[]').filter(x => x !== `${dato.ze}_${dato.k}`).concat(`${dato.ze}_${dato.k}`).slice(-30); localStorage.setItem('libreta.propios', JSON.stringify(l)); } catch (e) { /* sin almacenamiento */ }
       return Promise.race([envio.then(() => true, () => false), pausa(2500).then(() => true)]);
@@ -2399,7 +2399,7 @@ const Datos = (() => {
       sinConexion: 'No se pudo abrir la conexión con el servidor. Revisá internet y recargá la página.',
       donde: 'Los datos de este hogar se guardan en Firebase, un servicio de Google, y los ven solo sus integrantes. Cada teléfono guarda una copia para seguir andando sin conexión. Las fotos de los tickets quedan en el teléfono donde se cargaron.',
       fallo: 'No se pudo guardar. Revisá la conexión y probá de nuevo.',
-      version: 'Libreta del hogar · versión 2.9.0 (2026-10-17)',       // el número y la fecha los pone armar.js
+      version: 'Libreta del hogar · versión 2.12.0 (2026-10-17)',       // el número y la fecha los pone armar.js
     },
     /* Devuelve { db, permiso } si en este teléfono ya hay una cuenta con su hogar. Si no, { puerta, alEntrar }:
        la app muestra la entrada y `alEntrar` se cumple cuando se entra a un hogar. null: sin conexión. */
@@ -2712,7 +2712,7 @@ const Lector = (() => {
     if (afuera) afuera.addEventListener('abort', () => control.abort());
     try {
       const r = await fetch('https://world.openfoodfacts.org/api/v2/product/' + encodeURIComponent(codigo)
-        + '.json?fields=product_name,product_name_es,generic_name_es,brands,quantity,categories_tags', { signal: control.signal });
+        + '.json?fields=product_name,product_name_es,generic_name_es,brands,quantity,categories_tags,image_front_small_url', { signal: control.signal });
       if (r.status === 404) return null;
       if (!r.ok) throw new Error('la consulta no se pudo hacer: ' + r.status);
       const j = await r.json();
@@ -2723,6 +2723,8 @@ const Lector = (() => {
       return {
         nombre: nombre[0].toUpperCase() + nombre.slice(1), marca: limpio(String(p.brands || '').split(',')[0], 50),
         presentacion: limpio(p.quantity, 30), categoria: categoria(p.categories_tags), fuente: 'codigo',
+        // la foto del envase (la sacaron los que cargan la base): solo si es de su servidor de imágenes
+        foto: /^https:\/\/images\.openfoodfacts\.org\/[\w./-]+\.(jpg|jpeg|png|webp)$/i.test(String(p.image_front_small_url || '')) ? String(p.image_front_small_url) : '',
       };
     } finally { clearTimeout(reloj); }
   }
@@ -2734,7 +2736,7 @@ const Lector = (() => {
     porCodigo,
     textos: {
       sinEtiquetas: '', sinTickets: '',
-      consulta: 'Además, el código de barras de cada producto nuevo se consulta en Open Food Facts, una base pública, para completar su nombre.',
+      consulta: 'Además, el código de barras de cada producto nuevo se consulta en Open Food Facts, una base pública, para completar su nombre y mostrar la foto del envase.',
     },
     async etiqueta() { return null; },
     async ticket() { return null; },
@@ -2769,7 +2771,11 @@ const Cerca = (() => {
                                    // en el campo, los del pueblo de al lado)
   const RADIO_NOMBRE = 30000;      // metros: hasta dónde sirve un comercio buscado por su nombre
   const RADIO_ZONA = 4000;         // metros: hasta dónde interesan los precios de otros hogares
-  const VALE = 15;                 // días que vale un precio compartido: con la inflación, uno más viejo ya no dice mucho
+  /* Un precio que avisa un hogar se ve 24 horas desde que se cargó o se confirmó: después ya no se sabe si sigue y
+     daría falsas esperanzas. Quien está en el comercio lo puede confirmar («sigue igual») y vuelve a valer 24 horas.
+     VALE: el día del precio y el siguiente (para el servidor; dos días después lo borra solo). */
+  const HORAS = 24;
+  const VALE = 1;
   // Los precios oficiales de los supermercados (SEPA), ya preparados por zona: config.js dice dónde están.
   let OFICIALES = '';
   try { if (typeof preciosOficiales === 'string' && /^https?:\/\//.test(preciosOficiales.trim())) OFICIALES = preciosOficiales.trim().replace(/\/?$/, '/'); } catch (e) { /* config.js no lo trae */ }
@@ -2779,6 +2785,23 @@ const Cerca = (() => {
   const MAX_LUGARES = 400;         // cuántos comercios recuerda el teléfono (dónde quedan y cómo se llaman)
 
   const esObjeto = x => !!x && typeof x === 'object' && !Array.isArray(x);
+  // Cuándo se cargó o se confirmó un precio (la hora del servidor, en ms). Recién escrito, todavía sin esa hora: ahora.
+  function momento(d) {
+    if (!d || !('ts' in d)) return null;
+    const t = d.ts;
+    if (t == null) return Date.now();
+    if (typeof t === 'number') return t;
+    if (typeof t.toMillis === 'function') return t.toMillis();
+    if (typeof t.seconds === 'number') return t.seconds * 1000;
+    return null;
+  }
+  // ¿Se muestra? Del día o del anterior, y cargado o confirmado hace menos de 24 horas (sin hora conocida: solo si es de hoy).
+  function vigente(d, ahora) {
+    const hoy = N.diaDe(N.hoyISO());
+    if (!d || !(d.v >= hoy) || !(d.d <= hoy + 1) || !(d.d >= hoy - 1) || !(d.p > 0)) return false;
+    const t = momento(d);
+    return t == null ? d.d >= hoy : (ahora || Date.now()) - t < HORAS * 3600e3;
+  }
   function leer(k, def) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : def; } catch (e) { return def; } }
   function guardar(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* sin almacenamiento: dura lo que la visita */ } }
   const pausa = ms => new Promise(ok => setTimeout(ok, ms));
@@ -2804,6 +2827,13 @@ const Cerca = (() => {
     return esObjeto(p) && A.puntoValido(p.lat, p.lon) && Date.now() - p.t < 60 * DIA ? { lat: p.lat, lon: p.lon, t: p.t } : null;
   }
   function olvidarPosicion() { try { localStorage.removeItem(CLAVE_ACA); } catch (e) { /* sin almacenamiento */ } }
+  // La que da el teléfono mientras la app mira dónde está (para avisar al entrar a un comercio): se guarda cada tanto.
+  function anotarPosicion(pos) {
+    if (!pos || !A.puntoValido(pos.lat, pos.lon)) return;
+    const g = ultimaPosicion();
+    if (g && Date.now() - g.t < 120000 && A.distancia(g.lat, g.lon, pos.lat, pos.lon) < 60) return;
+    guardar(CLAVE_ACA, { lat: pos.lat, lon: pos.lon, t: Date.now() });
+  }
   const preguntar = ms => new Promise((ok, mal) => navigator.geolocation.getCurrentPosition(
     p => { const pos = { lat: p.coords.latitude, lon: p.coords.longitude, t: Date.now() }; guardar(CLAVE_ACA, pos); ok(pos); },
     e => mal({ code: e && e.code === 1 ? 'sin-permiso' : 'sin-ubicacion' }),
@@ -2843,6 +2873,12 @@ const Cerca = (() => {
     return Array.isArray(v) && A.puntoValido(v[0], v[1]) ? { id, lat: v[0], lon: v[1], nombre: v[3] || '', direccion: v[4] || '', rubro: v[5] || '' } : null;
   }
   const conocer = l => { conocidos.set(l.id, l); return l; };
+  // Todos los comercios que este teléfono ya conoce (los de esta visita y los recordados), sin pedir nada afuera.
+  function recordados() {
+    const m = new Map(conocidos);
+    for (const [id, v] of Object.entries(lugares())) if (!m.has(id) && Array.isArray(v) && A.puntoValido(v[0], v[1])) m.set(id, { id, lat: v[0], lon: v[1], nombre: v[3] || '', direccion: v[4] || '', rubro: v[5] || '' });
+    return [...m.values()];
+  }
 
   /* ---------- OpenStreetMap ----------
      Se pide solo lo que es comercio de comida o de la casa. Los cercanos y la búsqueda por nombre, a Photon (es
@@ -2914,7 +2950,7 @@ const Cerca = (() => {
   /* ---------- los que marcaron los hogares ---------- */
   const deLaZona = new Map();          // cuadro (0,1°) → { t, lista }
   async function marcados(pos) {
-    if (!Datos.comercios) return [];
+    if (!Datos.comercios || (Datos.hogar && Datos.hogar.yo && !Datos.hogar.yo())) return [];      // sin cuenta no se pueden leer
     const zonas = A.celdasCerca(pos.lat, pos.lon, RADIO_CERCA), faltan = zonas.filter(z => !deLaZona.has(z) || Date.now() - deLaZona.get(z).t > 600000);
     if (faltan.length) {
       try {
@@ -3015,7 +3051,7 @@ const Cerca = (() => {
   /* ---------- los precios de la zona ----------
      Cada precio compartido es un documento por zona (un cuadro del mapa), código de barras y comercio. Lleva el
      nombre público del comercio y, si el hogar lo eligió, su nombre público («Familia García»); nunca la cuenta, el
-     email ni los nombres de las personas. Vence a los 30 días como mucho y los vencidos se borran. */
+     email ni los nombres de las personas. Se ve 24 horas desde que se cargó o se confirmó, y el servidor lo borra a los pocos días. */
   // Lo que la zona compartió para esos códigos de barras cerca de `pos`: Map código → precios, el más barato primero.
   async function buscar(pos, codigos) {
     const hoy = N.diaDe(N.hoyISO()), zonas = A.celdasCerca(pos.lat, pos.lon, RADIO_ZONA), claves = [], out = new Map();
@@ -3029,9 +3065,9 @@ const Cerca = (() => {
     }
     const crudos = new Map();
     for (const d of docs) {
-      if (!(d.v >= hoy) || !(d.d <= hoy + 1) || !(d.p > 0)) { if (d.v < hoy - 2) Datos.precios.borrar(d.id); continue; }
+      if (!vigente(d)) { if (d.v < hoy - 2) Datos.precios.borrar(d.id); continue; }
       if (!crudos.has(d.e)) crudos.set(d.e, []);
-      crudos.get(d.e).push({ precio: +d.p, k: String(d.k), texto: typeof d.t === 'string' ? d.t : '', lat: +d.la, lon: +d.lo, dia: +d.d, cuantos: +d.c || 1, comercio: typeof d.n === 'string' ? d.n : '', hogar: typeof d.h === 'string' ? d.h : '', si: +d.qs || 0, no: +d.qn || 0 });
+      crudos.get(d.e).push({ precio: +d.p, k: String(d.k), t: momento(d), texto: typeof d.t === 'string' ? d.t : '', lat: +d.la, lon: +d.lo, dia: +d.d, cuantos: +d.c || 1, comercio: typeof d.n === 'string' ? d.n : '', hogar: typeof d.h === 'string' ? d.h : '', si: +d.qs || 0, no: +d.qn || 0 });
     }
     try { await sumarOficiales(pos, codigos, crudos); } catch (e) { /* sin los oficiales esta vez */ }
     for (const [e, l] of crudos) { const o = A.ordenarCerca(l, pos, RADIO_ZONA); if (o.length) out.set(e, o); }
@@ -3129,11 +3165,11 @@ const Cerca = (() => {
     }
     const m = new Map();
     for (const d of docs) {
-      if (!(d.v >= hoy) || !(d.d <= hoy + 1) || !(d.p > 0) || typeof d.t !== 'string' || !A.puntoValido(d.la, d.lo)) continue;
+      if (!vigente(d) || typeof d.t !== 'string' || !A.puntoValido(d.la, d.lo)) continue;
       if (!N.coincide(q, d.t) && !(d.g && N.CATS[d.g] && N.coincide(q, N.CATS[d.g]))) continue;
       const dist = A.distancia(pos.lat, pos.lon, d.la, d.lo);
       if (dist > RADIO_ZONA) continue;
-      const k = d.e + '|' + d.k, o = { e: d.e, texto: d.t, precio: +d.p, k: String(d.k), lat: +d.la, lon: +d.lo, dist, dia: +d.d, cuantos: +d.c || 1, comercio: typeof d.n === 'string' ? d.n : '', hogar: typeof d.h === 'string' ? d.h : '', si: +d.qs || 0, no: +d.qn || 0 };
+      const k = d.e + '|' + d.k, o = { e: d.e, texto: d.t, precio: +d.p, k: String(d.k), lat: +d.la, lon: +d.lo, dist, dia: +d.d, t: momento(d), cuantos: +d.c || 1, comercio: typeof d.n === 'string' ? d.n : '', hogar: typeof d.h === 'string' ? d.h : '', si: +d.qs || 0, no: +d.qn || 0 };
       const ya = m.get(k);
       if (!ya || o.dia > ya.dia) m.set(k, o);
     }
@@ -3143,17 +3179,20 @@ const Cerca = (() => {
     return { precios, promos: lp.slice(0, 10) };
   }
 
-  /* Confirmar que un precio de otro hogar sigue igual: el mismo documento, con la fecha de hoy y una confirmación más.
-     Conserva quién lo cargó y no se avisa como novedad. d: el documento tal como vino de Datos.precios. */
+  /* Confirmar que un precio de otro hogar sigue igual: el mismo documento, con la fecha de hoy y una confirmación más
+     (vuelve a valer 24 horas). Conserva quién lo cargó y no se avisa como novedad. d: el documento tal como vino de Datos.precios. */
   function confirmar(d) {
     const hoy = N.diaDe(N.hoyISO());
     return Datos.precios.aportar({ z: d.z, e: d.e, k: d.k, p: d.p, d: hoy, c: Math.min(9999, (+d.c || 1) + 1), la: d.la, lo: d.lo, v: hoy + VALE,
       n: d.n, h: d.h || '', qs: d.qs || 0, qn: d.qn || 0, t: d.t, g: d.g, sinNovedad: true });
   }
-  // Los precios vigentes que la zona tiene de un comercio (para confirmarlos): [{ id, z, e, k, p, d, c, t, … }].
+  /* Los precios de un comercio que conviene confirmar: los vigentes y los que vencieron hace poco (hasta 4 días: quien está
+     ahí puede decir si siguen y vuelven a valer). Los más viejos primero. [{ id, z, e, k, p, d, c, t, … }] */
   async function deComercio(k, lat, lon) {
     const hoy = N.diaDe(N.hoyISO()), docs = await Datos.precios.deZonas([A.celda(lat, lon)], 600);
-    return docs.filter(d => d.k === k && d.v >= hoy && d.p > 0 && typeof d.t === 'string').sort((a, b) => a.d - b.d);
+    return docs.filter(d => d.k === k && d.p > 0 && typeof d.t === 'string' && d.d >= hoy - 4 && d.d <= hoy + 1)
+      .map(d => Object.assign(d, { vence: !vigente(d) }))
+      .sort((a, b) => (b.vence ? 1 : 0) - (a.vence ? 1 : 0) || a.d - b.d || (momento(a) || 0) - (momento(b) || 0));
   }
 
   /* ---------- promos de la zona ----------
@@ -3313,7 +3352,7 @@ const Cerca = (() => {
     },
     posicion, ultimaPosicion, olvidarPosicion,
     cercanos, sugerir, ubicarSugerido, detalle, ubicacion, recordar, marcar, enlace, conocido: deMemoria, conOficiales: () => !!OFICIALES,
-    buscar, buscarTexto, aportar, confirmar, deComercio, VALE, limpiar, dibujar, promos, cargarPromo,
+    buscar, buscarTexto, aportar, confirmar, deComercio, VALE, HORAS, vigente, momento, anotarPosicion, recordados, limpiar, dibujar, promos, cargarPromo,
     RADIO_ZONA,
   };
 })();
@@ -3350,6 +3389,13 @@ const Cerca = (() => {
     <button type="button" data-act="paso" data-para="${id}" data-d="-1" aria-label="Uno menos">${ico('menos')}</button>
     <input type="number" id="${id}" data-k="${k}" value="${valor}" min="${min}" max="9999" step="1" inputmode="numeric" aria-labelledby="${id}-r">
     <button type="button" data-act="paso" data-para="${id}" data-d="1" aria-label="Uno más">${ico('mas')}</button></div></div>`;
+
+  // La foto del envase que da Open Food Facts (solo de su servidor de imágenes).
+  const fotoValida = u => typeof u === 'string' && /^https:\/\/images\.openfoodfacts\.org\/[\w./-]+\.(jpg|jpeg|png|webp)$/i.test(u);
+  // Las ilustraciones 3D (Fluent Emoji de Microsoft, licencia MIT): iconos/3d/<nombre>.webp
+  // (solo en la versión publicada, que lleva la carpeta iconos/3d; las de un solo archivo siguen sin dibujos)
+  const CON_3D = !!C;
+  function img3d(n, cls, tam) { return CON_3D ? h`<img class="${cls || 'i3d'}" src="iconos/3d/${n}.webp" alt="" width="${tam || 40}" height="${tam || 40}" loading="lazy" decoding="async">` : ''; }
 
   /* ---------- estado ---------- */
   const E = {
@@ -3511,6 +3557,8 @@ const Cerca = (() => {
     if (d.pedido > 0) doc.pedido = d.pedido;
     if (d.suelto) doc.suelto = true;
     if (d.porKg) doc.porKg = true;
+    if (d.base) doc.base = true;
+    if (fotoValida(d.foto)) doc.foto = d.foto;
     if (d.diario === true || d.diario === false) doc.diario = d.diario;
     const ref = E.db.collection('productos').doc();
     await escribir(() => ref.set(doc));
@@ -3588,7 +3636,8 @@ const Cerca = (() => {
       pintar();
     }, alFallar('tickets', tickets));
     const ajustes = () => db.doc('ajustes/hogar').onSnapshot(s => {
-      if (!s.exists) return;
+      if (!s.metadata || !s.metadata.fromCache || s.exists) E.ajListo = true;
+      if (!s.exists) { pintar(); return; }
       E.ajustes = leerAjustes(s.data() || {});
       pintar();
     }, alFallar('ajustes', ajustes));
@@ -3601,7 +3650,7 @@ const Cerca = (() => {
     if (c && c.puerta) {       // todavía no se entró a ningún hogar: se muestra la entrada y se espera
       const estado = Datos.hogar.estado();
       E.puerta = {
-        modo: estado === 'sin-usuario' && !leerLocal('libreta.tutorial', false) ? 'tutorial' : 'inicio', paso: 0,
+        modo: estado !== 'sin-usuario' ? 'inicio' : !leerLocal('libreta.tutorial', false) ? 'bienvenida' : leerLocal('libreta.invitado', false) && conMapa() ? 'invitado' : 'inicio', paso: 0,
         nombre: Datos.hogar.nombreSugerido(), codigo: conGuion(codigoEnlace), error: '', errorBuscar: '', ocupado: false, buscando: false,
         aviso: Datos.hogar.aviso(), diag: null,
       };
@@ -3704,9 +3753,51 @@ const Cerca = (() => {
     ['gastos', 'Cuánto gastás y cuánto ahorrás', 'Cada compra queda anotada en Gastos: cuánto se va por mes, en qué y cuánto subió cada cosa. Y en Ofertas, cuánto ahorraste gracias a otros hogares.'],
   ];
   // Con el mapa encendido hay un paso más: la comunidad de hogares de la zona.
-  const PASO_ZONA = ['mapa', 'Una comunidad de hogares', 'Avisá un precio de lo que sea y aparece al instante en el mapa del barrio; confirmá con un toque los que cargaron otros. La libreta te avisa si otro hogar consiguió más barato lo que comprás, y dónde. También ves los precios oficiales de los supermercados y las promos del día con tu banco o billetera. Compartir es optativo: va con el nombre que elijas para tu hogar, nunca con el tuyo.'];
+  const PASO_ZONA = ['mapa', 'Una comunidad de hogares', 'Avisá un precio de lo que sea y aparece al instante en el mapa del barrio: se ve 24 horas, y si lo confirmás con un toque vuelve a valer. Si entrás a un comercio con la app abierta, te avisa sus promos de hoy. La libreta te avisa si otro hogar consiguió más barato lo que comprás, y dónde. También ves los precios oficiales de los supermercados y las promos del día con tu banco o billetera. Compartir es optativo: va con el nombre que elijas para tu hogar, nunca con el tuyo.'];
   // Con la IA encendida, otro: las ideas para cocinar y la foto de las promos.
   const PASO_IA = ['olla', 'Ideas con inteligencia artificial', '¿No sabés qué cocinar? «¿Qué cocino?», en la Alacena, te propone comidas con lo que tenés y anota en la lista lo poco que falte. Y si ves un cartel de promo, sacale una foto: la IA la completa sola y la compartís con tu zona.'];
+  /* La bienvenida de la primera vez: tres pantallas con dibujos, y al final empezar o, con el mapa, mirar las ofertas
+     sin cuenta. (El tutorial completo queda en «Ver cómo funciona».) */
+  const BIENVENIDA = [
+    ['basket', 'Que no falte nada en casa', 'Cargá lo que hay y la libreta arma sola la lista de compras. Toda la familia la ve y la completa desde su teléfono.'],
+    ['world-map', 'El más barato, cerca tuyo', 'Los vecinos avisan precios y aparecen al instante en el mapa del barrio. Cada precio se ve 24 horas: siempre al día.'],
+    ['money-bag', 'Las ofertas de hoy, a mano', 'Las promos de hoy con tu banco o billetera y el súper más cercano donde valen. Y si entrás a uno, te avisa qué conviene.'],
+  ];
+  // Los dibujos del tutorial completo (uno por paso).
+  const DIBUJO_PASO = { compras: 'shopping-cart', escanear: 'label', familia: 'house', gastos: 'receipt', mapa: 'world-map', olla: 'pot-of-food' };
+  function vistaBienvenida(paso) {
+    const [img, titulo, texto] = BIENVENIDA[Math.max(0, Math.min(BIENVENIDA.length - 1, paso))], ultimo = paso >= BIENVENIDA.length - 1;
+    return h`<div class="bienvenida" id="bienvenida" data-paso="${paso}">
+      <div class="bv-dibujo">${img3d(img, 'bv-img', 168)}</div>
+      <h1 class="bv-titulo">${titulo}</h1><p class="bv-texto">${texto}</p>
+      <p class="tut-puntos" role="img" aria-label="Paso ${paso + 1} de ${BIENVENIDA.length}">${BIENVENIDA.map((x, i) => h`<i${atr('class="aca"', i === paso)}></i>`)}</p>
+      ${ultimo ? h`<div class="bv-acciones"><button type="button" class="btn btn-principal btn-grande" data-act="bienv-empezar">Empezar gratis</button>
+          ${conMapa() ? h`<button type="button" class="btn btn-grande" data-act="invitado">${img3d('label', 'i3d', 26)}Ver las ofertas de hoy sin cuenta</button>` : ''}</div>`
+        : h`<div class="hoja-pie"><button type="button" class="btn" data-act="bienv-saltar">Saltar</button>
+          <button type="button" class="btn btn-principal" data-act="bienv-sigue">Siguiente</button></div>`}
+      <button type="button" class="enlace" data-act="tutorial-ver">Ver cómo funciona, paso a paso</button></div>`;
+  }
+  /* Sin cuenta: las ofertas de hoy de bancos y billeteras, las sucursales cerca y el mapa con las que tienen promo.
+     No le pide nada a la nube (no hay cuenta); la ubicación, si la da, queda en el teléfono. */
+  function vistaInvitado() {
+    const P = E.puerta, pos = C.ultimaPosicion();
+    return h`<div class="invitado">
+      <div class="cabeza"><h1>Ofertas de hoy</h1><p class="resumen">Sin cuenta, para mirar. Para tu lista, tu alacena y los precios de los vecinos, armá tu libreta gratis.</p></div>
+      ${bloqueOfertasHoy() || h`<div class="vacio con-img">${img3d('money-bag', 'vacio-img', 88)}<h3>Hoy no hay promos de bancos cargadas</h3><p>Volvé mañana: cambian todos los días.</p></div>`}
+      <div class="acciones">${pos ? h`<button type="button" class="btn btn-principal" data-act="mapa-vivo">${ico('mapa')}Ver en el mapa</button>`
+        : h`<button type="button" class="btn btn-principal" data-act="invitado-ubicacion"${atr('disabled', !!P.ubicando)}>${ico('lugar')}${P.ubicando ? 'Buscando dónde estás…' : 'Usar mi ubicación: el súper más cerca'}</button>`}</div>
+      ${P.error ? h`<p class="error" role="alert">${P.error}</p>` : ''}
+      <section class="invitado-cta">${img3d('basket', 'cta-img', 92)}
+        <h2>Armá tu libreta, gratis</h2>
+        <ul class="cta-lista">
+          <li>${img3d('shopping-cart', 'i3d', 30)}<span>La lista de compras se arma sola</span></li>
+          <li>${img3d('world-map', 'i3d', 30)}<span>Los precios que avisan los vecinos, en el mapa</span></li>
+          <li>${img3d('bell', 'i3d', 30)}<span>Te aviso al entrar a un súper con promo</span></li>
+          <li>${img3d('house', 'i3d', 30)}<span>Toda la familia en la misma libreta</span></li></ul>
+        ${botonGoogle(P.ocupado)}
+        <p class="tenue chico">Sin publicidad. Al continuar aceptás las <a href="privacidad.html#condiciones" target="_blank" rel="noopener">condiciones de uso</a> y la <a href="privacidad.html" target="_blank" rel="noopener">política de privacidad</a>.</p></section>
+      <button type="button" class="enlace" data-act="puerta-volver">Volver</button></div>`;
+  }
   function pasosTutorial() {
     const l = conMapa() ? [TUTORIAL_BASE[0], TUTORIAL_BASE[1], PASO_ZONA, TUTORIAL_BASE[2], TUTORIAL_BASE[3]] : TUTORIAL_BASE.slice();
     if (hayIA()) l.splice(l.length - 1, 0, PASO_IA);
@@ -3715,7 +3806,7 @@ const Cerca = (() => {
   const DIAS_SEMANA = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
   function vistaTutorial(paso, acciones) {
     const TUTORIAL = pasosTutorial(), [icono, titulo, texto] = TUTORIAL[Math.max(0, Math.min(TUTORIAL.length - 1, paso))];
-    return h`<div class="tutorial" id="tutorial"><div class="tut-ico">${ico(icono)}</div>
+    return h`<div class="tutorial" id="tutorial"><div class="tut-ico">${CON_3D && DIBUJO_PASO[icono] ? img3d(DIBUJO_PASO[icono], 'tut-img', 76) : ico(icono)}</div>
       <h2 class="tut-titulo">${titulo}</h2><p class="tut-texto">${texto}</p>
       <p class="tut-puntos" role="img" aria-label="Paso ${paso + 1} de ${TUTORIAL.length}">${TUTORIAL.map((x, i) => h`<i${atr('class="aca"', i === paso)}></i>`)}</p>
       ${acciones}</div>`;
@@ -3724,6 +3815,10 @@ const Cerca = (() => {
     <svg class="ico-google" aria-hidden="true"><use href="#i-google"/></svg><span>${ocupado ? 'Esperando a Google…' : 'Continuar con Google'}</span></button>`;
   function renderPuerta() {
     const P = E.puerta, estado = Datos.hogar.estado(), yo = Datos.hogar.yo();
+    if (estado !== 'config' && estado !== 'red' && !yo && (P.modo === 'bienvenida' || P.modo === 'invitado')) {
+      $('#puerta').innerHTML = val(P.modo === 'bienvenida' ? vistaBienvenida(P.paso) : vistaInvitado());
+      return;
+    }
     const error = P.error ? h`<p class="error" role="alert">${P.error}</p>` : '';
     const nombre = campo('¿Cómo te llaman en casa?', h`<input type="text" id="pu-nombre" data-p="nombre" value="${P.nombre}" maxlength="40" autocomplete="off">`, 'Así te van a ver los demás integrantes del hogar.');
     let titulo = 'Tu hogar', bajada = 'La alacena, las compras y los gastos de casa, compartidos con tu familia: lo que anota uno lo ven todos.', cuerpo, pie = true;
@@ -3741,6 +3836,7 @@ const Cerca = (() => {
       cuerpo = h`${error}<div class="elegir">${botonGoogle(P.ocupado)}</div>
         <p class="tenue chico">La libreta solo toma tu nombre y tu email, para reconocerte en cualquier teléfono. ${soloCodigo(P.codigo).length === 8 ? 'Después de entrar se usa el código de la invitación.' : '¿Te invitaron a un hogar? Entrá primero con tu cuenta y después ponés el código.'}</p>
         <p class="tenue chico" id="pu-legal">Al continuar aceptás las <a href="privacidad.html#condiciones" target="_blank" rel="noopener">condiciones de uso</a> y la <a href="privacidad.html" target="_blank" rel="noopener">política de privacidad</a>.</p>
+        ${conMapa() ? h`<button type="button" class="btn btn-invitado" data-act="invitado">${img3d('label', 'i3d', 26)}Ver las ofertas de hoy sin cuenta</button>` : ''}
         <button type="button" class="enlace" data-act="tutorial-ver">Ver cómo funciona</button>`;
     } else if (P.buscando) {
       cuerpo = cargando('Buscando tu hogar…');
@@ -3869,7 +3965,8 @@ const Cerca = (() => {
     return {
       frecuencia: N.FRECUENCIAS.includes(d.frecuencia) ? d.frecuencia : 7, presupuesto: +d.presupuesto > 0 ? +d.presupuesto : 0,
       compartir: d.compartir === true ? true : d.compartir === false ? false : null, comercios,
-      alias: typeof d.alias === 'string' ? d.alias.slice(0, 40) : '', avisos: d.avisos === true,
+      alias: typeof d.alias === 'string' ? d.alias.slice(0, 40) : '', avisos: d.avisos === true, semilla: [1, 2].includes(d.semilla) ? d.semilla : 0,
+      racha: esObjeto(d.racha) && Number.isInteger(d.racha.s) && d.racha.n > 0 ? { s: d.racha.s, n: Math.min(9999, Math.round(d.racha.n)) } : null,
       ahorroDias: esObjeto(d.ahorroDias) ? Object.fromEntries(Object.entries(d.ahorroDias).filter(([k, v]) => /^\d{4,6}$/.test(k) && +v > 0).map(([k, v]) => [k, +v])) : {},
       aportes: esObjeto(d.aportes) ? Object.fromEntries(Object.entries(d.aportes).filter(([m, v]) => /^\d{4}-\d{2}$/.test(m) && +v > 0).map(([m, v]) => [m, Math.round(+v)])) : {},
       ahorro: esObjeto(d.ahorro) ? Object.fromEntries(Object.entries(d.ahorro).filter(([m, v]) => /^\d{4}-\d{2}$/.test(m) && +v > 0).map(([m, v]) => [m, +v])) : {},
@@ -3882,7 +3979,9 @@ const Cerca = (() => {
     const doc = { frecuencia: nuevo.frecuencia, presupuesto: nuevo.presupuesto };      // lo que nunca se usó no se guarda
     if (nuevo.compartir != null) doc.compartir = nuevo.compartir;
     if (nuevo.alias || antes.alias) doc.alias = nuevo.alias || '';
-    if (nuevo.avisos) doc.avisos = true;           // alguien del hogar activó las notificaciones: vale la pena anotar lo que pasa
+    if (nuevo.avisos) doc.avisos = true;
+    if (nuevo.semilla) doc.semilla = nuevo.semilla;  // 1: se cargó lo básico al empezar · 2: ya se vio el aviso
+    if (nuevo.racha) doc.racha = nuevo.racha;           // alguien del hogar activó las notificaciones: vale la pena anotar lo que pasa
     if (Object.keys(nuevo.ahorro || {}).length) doc.ahorro = nuevo.ahorro;
     if (Object.keys(nuevo.ahorroDias || {}).length) doc.ahorroDias = nuevo.ahorroDias;
     if (Object.keys(nuevo.aportes || {}).length) doc.aportes = nuevo.aportes;
@@ -4215,9 +4314,18 @@ const Cerca = (() => {
     ad[dia] = N.redondear2((+ad[dia] || 0) + monto);
     for (const k of Object.keys(ad)) if (+k < hoyDia() - 40) delete ad[k];
     cambiarAjustes({ ahorro: ah, ahorroDias: ad }).catch(() => {});
+    celebrar(true);
+    sumarRacha();
   }
   const ahorroDelMes = () => +(E.ajustes.ahorro || {})[N.hoyISO().slice(0, 7)] || 0;
-  const detalleOferta = (o, hoy) => [o.comercio ? `en ${o.comercio}` : '', o.dist != null ? `a ${A.distTexto(o.dist)}${o.deCompra ? ' de donde compraste' : ''}` : '', A.haceDias(hoy - o.dia), A.origen(o), A.recoTexto([o]),
+  /* Cuánto hace que se cargó o confirmó un precio de la zona: «recién», «hace 20 min», «hace 3 h» (los de los hogares se
+     ven 24 horas). Sin hora conocida (lo propio, los oficiales), por días. o: una oferta ({ t: ms, dia }) o un documento ({ ts, d }). */
+  function haceRato(o, hoy) {
+    const t = typeof o.t === 'number' ? o.t : C ? C.momento(o) : null;
+    if (t) { const m = Math.max(0, Math.round((Date.now() - t) / 60000)); return m < 2 ? 'recién' : m < 60 ? `hace ${m} min` : `hace ${Math.floor(m / 60)} h`; }
+    return A.haceDias((hoy != null ? hoy : hoyDia()) - (o.dia != null ? o.dia : o.d));
+  }
+  const detalleOferta = (o, hoy) => [o.comercio ? `en ${o.comercio}` : '', o.dist != null ? `a ${A.distTexto(o.dist)}${o.deCompra ? ' de donde compraste' : ''}` : '', haceRato(o, hoy), A.origen(o), A.recoTexto([o]),
     o.promo ? `con promo: ${N.plata(o.promo.precio)}${o.promo.texto ? ` (${o.promo.texto})` : ''}` : ''].filter(Boolean).join(' · ');
   // La tostada después de anotar un precio: quién lo consiguió más barato y dónde.
   const avisoBarato = o => `${o.hogar && !o.propio ? `${o.hogar} lo consiguió` : 'Otros hogares lo consiguieron'} más barato: ${textoOferta(o)}`;
@@ -4287,6 +4395,7 @@ const Cerca = (() => {
   const aportesDelMes = () => +(E.ajustes.aportes || {})[N.hoyISO().slice(0, 7)] || 0;
   function contarAportes(n) {
     if (!(n > 0)) return;
+    sumarRacha();
     const mes = N.hoyISO().slice(0, 7), ap = Object.assign({}, E.ajustes.aportes);
     ap[mes] = (+ap[mes] || 0) + n;
     for (const m of Object.keys(ap).sort().slice(0, -12)) delete ap[m];
@@ -4324,6 +4433,235 @@ const Cerca = (() => {
       return b ? new File([b], 'mi-ahorro.png', { type: 'image/png' }) : null;
     } catch (e) { return null; }
   }
+  /* ---------- festejos ----------
+     Papelitos de colores cuando se ahorra, se avisa o se confirma un precio. Sin movimiento si la persona lo pidió. */
+  function celebrar(fuerte) {
+    try {
+      document.documentElement.dataset.festejos = String((+document.documentElement.dataset.festejos || 0) + 1);
+      if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+      const c = document.createElement('canvas'), dpr = Math.min(2, window.devicePixelRatio || 1), W = window.innerWidth, H = window.innerHeight;
+      c.className = 'confeti'; c.width = W * dpr; c.height = H * dpr; c.setAttribute('aria-hidden', 'true');
+      document.body.appendChild(c);
+      const x = c.getContext('2d'), colores = ['#FFE352', '#2343B5', '#BE2A20', '#176B3E', '#4C6FE0', '#FFB74D', '#D24C8F'], ps = [];
+      x.scale(dpr, dpr);
+      for (let i = 0; i < (fuerte ? 170 : 90); i++) {
+        const a = -Math.PI / 2 + (Math.random() - 0.5) * 1.6, v = 8 + Math.random() * 10;
+        ps.push({ x: W / 2 + (Math.random() - 0.5) * 90, y: H * 0.66, vx: Math.cos(a) * v, vy: Math.sin(a) * v, r: Math.random() * 6.3, vr: (Math.random() - 0.5) * 0.4, w: 6 + Math.random() * 6, h: 9 + Math.random() * 8, c: colores[i % colores.length] });
+      }
+      const t0 = performance.now(), DUR = 1900;
+      const paso = t => {
+        const dt = t - t0;
+        x.clearRect(0, 0, W, H);
+        for (const p of ps) {
+          p.vy += 0.34; p.vx *= 0.99; p.x += p.vx; p.y += p.vy; p.r += p.vr;
+          x.save(); x.translate(p.x, p.y); x.rotate(p.r); x.globalAlpha = Math.max(0, 1 - dt / DUR); x.fillStyle = p.c; x.fillRect(-p.w / 2, -p.h / 2, p.w, p.h); x.restore();
+        }
+        if (dt < DUR) requestAnimationFrame(paso); else c.remove();
+      };
+      requestAnimationFrame(paso);
+    } catch (e) { /* sin festejo */ }
+  }
+  /* La racha: semanas seguidas en que el hogar ahorró o avisó precios. ajustes.racha = { s: la semana (lunes a domingo), n }. */
+  const semanaDe = dia => Math.floor((dia + 3) / 7);
+  function sumarRacha() {
+    const s = semanaDe(hoyDia()), r = E.ajustes.racha;
+    if (r && r.s === s) return 0;
+    const n = r && r.s === s - 1 ? r.n + 1 : 1;
+    cambiarAjustes({ racha: { s, n } }).catch(() => {});
+    if (n >= 2) { avisar(`🔥 ¡${n} semanas seguidas ahorrando o avisando precios!`); celebrar(true); }
+    return n;
+  }
+  const rachaActual = () => { const r = E.ajustes.racha, s = semanaDe(hoyDia()); return r && (r.s === s || r.s === s - 1) ? r.n : 0; };
+
+  /* ---------- el cartel para el barrio ----------
+     Una hoja A4 (1240 × 1754) para imprimir y pegar en el almacén, el edificio o la escuela: para qué sirve la libreta
+     y un código QR grande que la abre. Se dibuja en el teléfono. */
+  async function cartelBarrio() {
+    try {
+      try { if (document.fonts && document.fonts.load) await Promise.all(['900 100px Archivo', '800 100px Archivo', '600 44px Archivo', '700 40px "Chivo Mono"'].map(f => document.fonts.load(f).catch(() => null))); } catch (e) { /* letra del sistema */ }
+      const W = 1240, H = 1754, c = document.createElement('canvas'); c.width = W; c.height = H;
+      const x = c.getContext('2d');
+      x.fillStyle = '#2343B5'; x.fillRect(0, 0, W, H);
+      x.globalAlpha = 0.1; x.fillStyle = '#FFFFFF';
+      x.beginPath(); x.arc(1100, 180, 360, 0, Math.PI * 2); x.fill();
+      x.beginPath(); x.arc(80, 1650, 300, 0, Math.PI * 2); x.fill();
+      x.globalAlpha = 1;
+      x.textAlign = 'left'; x.fillStyle = '#FFE352';
+      enLienzo(x, 'LIBRETA DEL HOGAR · GRATIS', 90, 150, 760, 700, 44, '"Chivo Mono", ui-monospace, monospace');
+      x.fillStyle = '#FFFFFF';
+      enLienzo(x, '¿DÓNDE ESTÁ', 84, 300, 820, 900, 132);
+      enLienzo(x, 'MÁS BARATO', 84, 430, 820, 900, 132);
+      x.fillStyle = '#FFE352';
+      enLienzo(x, 'HOY?', 84, 560, 820, 900, 132);
+      const [bolsa, canasta] = await Promise.all([imagen('iconos/3d-grande/money-bag.webp'), imagen('iconos/3d-grande/basket.webp')]);
+      for (const [im, X, Y, t, r] of [[bolsa, 1010, 330, 300, 0.2], [canasta, 860, 560, 210, -0.15]]) {
+        if (!im) continue;
+        x.save(); x.translate(X, Y); x.rotate(r); x.shadowColor = 'rgba(0,0,0,.35)'; x.shadowBlur = 40; x.shadowOffsetY = 18; x.drawImage(im, -t / 2, -t / 2, t, t); x.restore();
+      }
+      x.fillStyle = '#FFFFFF';
+      x.beginPath(); if (x.roundRect) x.roundRect(70, 680, 1100, 1000, 48); else x.rect(70, 680, 1100, 1000); x.fill();
+      const puntos = [['label', 'Las promos de hoy con tu banco o billetera'], ['world-map', 'Los precios que avisan los vecinos, en el mapa'], ['shopping-cart', 'La lista de compras se arma sola'], ['house', 'Para toda la familia · sin publicidad']];
+      const dibujos = await Promise.all(puntos.map(([n]) => imagen(`iconos/3d/${n}.webp`)));
+      puntos.forEach(([, t], i) => {
+        const Y = 760 + i * 92;
+        if (dibujos[i]) x.drawImage(dibujos[i], 120, Y, 64, 64);
+        x.fillStyle = '#131C33'; enLienzo(x, t, 210, Y + 46, 900, 600, 44);
+      });
+      const m = typeof QR !== 'undefined' ? QR.matriz(URL_APP()) : null;
+      if (m) {
+        const n = m.length, lado = 470, t = lado / (n + 2), X0 = 120, Y0 = 1150;
+        x.fillStyle = '#131C33';
+        for (let yy = 0; yy < n; yy++) for (let xx = 0; xx < n; xx++) if (m[yy][xx]) x.fillRect(X0 + (xx + 1) * t, Y0 + (yy + 1) * t, Math.ceil(t), Math.ceil(t));
+      }
+      x.fillStyle = '#131C33';
+      enLienzo(x, 'Escaneá el código', 640, 1250, 480, 800, 54);
+      enLienzo(x, 'con la cámara del celular', 640, 1310, 480, 500, 40);
+      x.fillStyle = '#2343B5';
+      enLienzo(x, URL_APP().replace(/^https?:\/\//, '').replace(/\/$/, ''), 640, 1390, 480, 600, 32);
+      const logo = await imagen('iconos/icono-192.png');
+      if (logo) x.drawImage(logo, 640, 1450, 130, 130);
+      x.fillStyle = '#131C33'; enLienzo(x, 'Libreta', 790, 1508, 330, 800, 56);
+      x.fillStyle = '#51607D'; enLienzo(x, 'del hogar', 790, 1556, 330, 500, 40);
+      return await aArchivo(c, 'cartel-libreta-del-hogar.png');
+    } catch (e) { return null; }
+  }
+
+  /* ---------- tarjetas para compartir (WhatsApp, estados) ----------
+     Una imagen de 1080 × 1350 con la oferta en grande, los dibujos 3D y abajo la libreta: el logo, la dirección y el
+     código QR para abrirla. Se dibuja en el teléfono; no pasa por ningún servidor. */
+  const imagenes = new Map();
+  function imagen(src) {
+    if (!imagenes.has(src)) imagenes.set(src, new Promise(ok => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => ok(null); i.src = src; }));
+    return imagenes.get(src);
+  }
+  const COLORES_TARJETA = [['#2343B5', '#FFE352', '#FFFFFF'], ['#BE2A20', '#FFE352', '#FFFFFF'], ['#176B3E', '#FFE352', '#FFFFFF'], ['#FFE352', '#BE2A20', '#131C33']];
+  // Un texto que entra en `ancho`: si no entra, se achica la letra.
+  function enLienzo(x, t, X, Y, ancho, peso, tam, familia) {
+    let n = tam;
+    do { x.font = `${peso} ${n}px ${familia || 'Archivo, system-ui, sans-serif'}`; n -= 4; } while (n > 16 && x.measureText(t).width > ancho);
+    x.fillText(t, X, Y);
+  }
+  async function lienzoTarjeta(fondo) {
+    try { if (document.fonts && document.fonts.load) await Promise.all(['900 100px Archivo', '800 100px Archivo', '600 60px Archivo', '700 40px "Chivo Mono"'].map(f => document.fonts.load(f).catch(() => null))); } catch (e) { /* con la letra del sistema */ }
+    const c = document.createElement('canvas'); c.width = 1080; c.height = 1350;
+    const x = c.getContext('2d');
+    x.fillStyle = fondo; x.fillRect(0, 0, 1080, 1350);
+    x.globalAlpha = 0.1; x.fillStyle = '#FFFFFF';
+    x.beginPath(); x.arc(930, 170, 330, 0, Math.PI * 2); x.fill();
+    x.beginPath(); x.arc(60, 900, 230, 0, Math.PI * 2); x.fill();
+    x.globalAlpha = 1;
+    return { c, x };
+  }
+  // Abajo: la franja blanca con el logo, para qué sirve la libreta, su dirección y el QR para abrirla.
+  async function pieTarjeta(x, bajada) {
+    x.fillStyle = '#FFFFFF';
+    x.beginPath(); if (x.roundRect) x.roundRect(40, 960, 1000, 350, 44); else x.rect(40, 960, 1000, 350); x.fill();
+    const logo = await imagen('iconos/icono-192.png');
+    if (logo) x.drawImage(logo, 90, 1010, 124, 124);
+    x.textAlign = 'left'; x.fillStyle = '#131C33';
+    enLienzo(x, 'Libreta del hogar', 240, 1068, 470, 800, 60);
+    x.fillStyle = '#51607D';
+    enLienzo(x, bajada, 240, 1122, 470, 500, 36);
+    x.fillStyle = '#2343B5';
+    enLienzo(x, URL_APP().replace(/^https?:\/\//, '').replace(/\/$/, ''), 90, 1250, 600, 600, 34);
+    const m = typeof QR !== 'undefined' ? QR.matriz(URL_APP()) : null;
+    if (m) {
+      const n = m.length, lado = 250, t = lado / (n + 2), X0 = 1040 - 40 - lado, Y0 = 1010;
+      x.fillStyle = '#131C33';
+      for (let yy = 0; yy < n; yy++) for (let xx = 0; xx < n; xx++) if (m[yy][xx]) x.fillRect(X0 + (xx + 1) * t, Y0 + (yy + 1) * t, Math.ceil(t), Math.ceil(t));
+    }
+  }
+  async function aArchivo(c, nombre) {
+    const b = await new Promise(ok => c.toBlob(ok, 'image/png'));
+    return b ? new File([b], nombre, { type: 'image/png' }) : null;
+  }
+  // La tarjeta de una promo de banco o billetera de hoy.
+  async function tarjetaOferta(p, i, dow) {
+    try {
+      const [fondo, color, tinta] = COLORES_TARJETA[i % 4], { c, x } = await lienzoTarjeta(fondo);
+      x.textAlign = 'left'; x.fillStyle = color;
+      enLienzo(x, `HOY, ${DIAS_SEMANA[dow].toUpperCase()}`, 80, 150, 600, 700, 46, '"Chivo Mono", ui-monospace, monospace');
+      x.font = '900 380px Archivo, system-ui, sans-serif';
+      const num = String(p.pct), w = x.measureText(num).width;
+      x.fillText(num, 64, 500);
+      x.font = '900 170px Archivo, system-ui, sans-serif'; x.fillText('%', 64 + w + 10, 360);
+      const dibujo = await imagen(`iconos/3d-grande/${/dni|modo|mercado pago|app|qr/i.test(p.medio) ? 'mobile-phone' : 'credit-card'}.webp`);
+      if (dibujo) { x.save(); x.translate(915, 300); x.rotate(0.2); x.shadowColor = 'rgba(0,0,0,.35)'; x.shadowBlur = 40; x.shadowOffsetY = 20; x.drawImage(dibujo, -125, -125, 250, 250); x.restore(); }
+      x.fillStyle = tinta;
+      enLienzo(x, String(p.cadena).toUpperCase(), 80, 650, 920, 800, 120);
+      enLienzo(x, `con ${p.medio}`, 80, 740, 920, 600, 64);
+      x.globalAlpha = 0.85; enLienzo(x, pbTope(p), 80, 815, 920, 500, 46); x.globalAlpha = 1;
+      x.globalAlpha = 0.75; enLienzo(x, 'Confirmá condiciones en la app de tu banco', 80, 890, 920, 500, 34); x.globalAlpha = 1;
+      await pieTarjeta(x, 'Las ofertas de hoy cerca tuyo, gratis');
+      return await aArchivo(c, `oferta-${N.norm(p.cadena).replace(/[^a-z0-9]+/g, '-')}.png`);
+    } catch (e) { return null; }
+  }
+
+  /* ---------- el precio estrella de hoy ----------
+     Lo más llamativo de las últimas 24 horas en la zona: primero, lo que otro hogar consiguió más barato que lo que paga
+     este (por lo menos 8 % menos); si no, el producto con la mayor diferencia entre comercios del barrio. Si no hay nada
+     para comparar, el último precio que avisó un vecino. */
+  function precioEstrella() {
+    const pos = C.ultimaPosicion();
+    for (const x of puedeCerca() ? ofertasCerca() : []) {
+      if (x.baja < 0.08 || x.o.oficial || !A.puntoValido(x.o.lat, x.o.lon)) continue;
+      return { tipo: 'estrella', nombre: x.p.nombre, precio: x.o.precio, k: x.o.k, comercio: nombreDeRef(x.o.k) || x.o.comercio || 'un comercio', dist: x.o.dist,
+        icono: iconoDe(x.p), foto: fotoValida(x.p.foto) ? x.p.foto : '', rato: haceRato(x.o), texto: `${Math.round(x.baja * 100)} % menos de lo que pagás vos (${N.plata(x.p.precio)})`, pct: Math.round(x.baja * 100) };
+    }
+    const vig = ((E.barrio && E.barrio.vig) || []).filter(d => typeof d.t === 'string' && A.puntoValido(d.la, d.lo));
+    if (!vig.length) return null;
+    const grupos = new Map();
+    for (const d of vig) { const g = grupos.get(d.e) || new Map(), ya = g.get(d.k); if (!ya || d.p < ya.p) g.set(d.k, d); grupos.set(d.e, g); }
+    let mejor = null;
+    for (const g of grupos.values()) {
+      const l = [...g.values()].sort((a, b) => a.p - b.p);
+      if (l.length < 2) continue;
+      const resto = l.slice(1), prom = resto.reduce((t, d) => t + d.p, 0) / resto.length, baja = 1 - l[0].p / prom;
+      if (baja >= 0.08 && l[0].p >= prom * 0.4 && (!mejor || baja > mejor.baja)) mejor = { d: l[0], baja, prom };
+    }
+    const base = d => ({ nombre: d.t, precio: +d.p, k: d.k, comercio: nombreDeRef(d.k) || d.n || 'un comercio', dist: pos ? A.distancia(pos.lat, pos.lon, d.la, d.lo) : null,
+      icono: iconoDe({ nombre: d.t, categoria: d.g }), foto: '', rato: haceRato(d) });
+    if (mejor) return Object.assign(base(mejor.d), { tipo: 'estrella', pct: Math.round(mejor.baja * 100), texto: `${Math.round(mejor.baja * 100)} % menos que en otros comercios del barrio (${N.plata(Math.round(mejor.prom))})` });
+    const ult = vig.slice().sort((a, b) => (C.momento(b) || b.d * 864e5) - (C.momento(a) || a.d * 864e5))[0];
+    return Object.assign(base(ult), { tipo: 'ultimo', pct: 0, texto: ult.h ? `lo avisó ${ult.h}` : 'lo avisó un vecino' });
+  }
+  function bloqueEstrella() {
+    const x = precioEstrella();
+    if (!x) return '';
+    E.estrella = x;
+    return h`<section class="estrella${x.tipo === 'ultimo' ? ' es-ultimo' : ''}" aria-labelledby="es-t">
+      <div class="es-cabeza">${img3d(x.tipo === 'ultimo' ? 'megaphone' : 'glowing-star', 'es-star', 40)}<h2 class="es-rotulo" id="es-t">${x.tipo === 'ultimo' ? 'Recién avisado en tu zona' : 'Precio estrella de hoy'}</h2></div>
+      <div class="es-cuerpo"><span class="es-img">${img3d(x.icono, 'i3d', 78)}${x.foto ? h`<img class="foto-prod" src="${x.foto}" alt="" referrerpolicy="no-referrer">` : ''}</span>
+        <div class="es-datos"><p class="es-nombre">${x.nombre}</p><p class="es-precio">${N.plata(x.precio)}</p>
+          <p class="es-donde">en ${x.comercio}${x.dist != null ? ` · a ${A.distTexto(x.dist)}` : ''} · ${x.rato}</p></div></div>
+      <p class="es-baja">${x.pct ? h`<strong>−${x.pct} %</strong> ` : ''}${x.pct ? x.texto.replace(/^\d+ % /, '') : x.texto}</p>
+      <div class="acciones"><button type="button" class="btn btn-chico btn-principal" data-act="oferta-mapa" data-k="${x.k}">${ico('mapa')}Ver en el mapa</button>
+        <button type="button" class="btn btn-chico" data-act="compartir-estrella">${ico('compartir')}Compartir</button></div></section>`;
+  }
+  async function tarjetaEstrella(x) {
+    try {
+      const { c, x: g } = await lienzoTarjeta('#131C33');
+      g.textAlign = 'left'; g.fillStyle = '#FFE352';
+      enLienzo(g, x.tipo === 'ultimo' ? 'RECIÉN AVISADO EN EL BARRIO' : 'PRECIO ESTRELLA DE HOY', 80, 150, 700, 700, 46, '"Chivo Mono", ui-monospace, monospace');
+      const estrella = await imagen(`iconos/3d-grande/${x.tipo === 'ultimo' ? 'megaphone' : 'glowing-star'}.webp`);
+      if (estrella) { g.save(); g.translate(900, 250); g.rotate(0.18); g.shadowColor = 'rgba(0,0,0,.45)'; g.shadowBlur = 40; g.drawImage(estrella, -130, -130, 260, 260); g.restore(); }
+      g.fillStyle = '#FFFFFF';
+      enLienzo(g, x.nombre, 80, 300, 700, 800, 96);
+      g.fillStyle = '#FFE352';
+      enLienzo(g, N.plata(x.precio), 76, 540, 940, 900, 230);
+      g.fillStyle = '#FFFFFF';
+      enLienzo(g, `en ${x.comercio}`, 80, 650, 920, 700, 70);
+      if (x.pct) {
+        g.fillStyle = '#74DAA6'; g.beginPath(); if (g.roundRect) g.roundRect(80, 710, 330, 96, 48); else g.rect(80, 710, 330, 96); g.fill();
+        g.fillStyle = '#0E2A1B'; g.textAlign = 'center'; enLienzo(g, `−${x.pct} %`, 245, 782, 300, 900, 66); g.textAlign = 'left';
+        g.fillStyle = '#DCE4F0'; enLienzo(g, x.texto.replace(/^\d+ % /, '').replace(/ \(.*\)$/, ''), 440, 775, 580, 500, 38);
+      } else { g.fillStyle = '#DCE4F0'; enLienzo(g, x.texto, 80, 770, 920, 500, 44); }
+      g.fillStyle = '#AEBCD6'; enLienzo(g, 'Los precios que avisan los vecinos se ven 24 horas', 80, 890, 920, 500, 34);
+      await pieTarjeta(g, 'Los precios del barrio, entre vecinos');
+      return await aArchivo(c, 'precio-del-barrio.png');
+    } catch (e) { return null; }
+  }
+
   // Lo de la zona para el bloque del barrio: cuántos precios hay, qué hogares aportan más y si hay algo para confirmar acá.
   async function actualizarBarrio(forzar) {
     const pos = C.ultimaPosicion();
@@ -4332,7 +4670,8 @@ const Cerca = (() => {
     E.barrio = Object.assign({}, E.barrio, { estado: 'buscando', t: Date.now() });
     let docs = null;
     try { docs = await Datos.precios.deZonas(A.celdasCerca(pos.lat, pos.lon, C.RADIO_ZONA), 600); } catch (e) { docs = null; }
-    const hoy = hoyDia(), vig = (docs || []).filter(d => d.v >= hoy && d.p > 0 && A.puntoValido(d.la, d.lo) && A.distancia(pos.lat, pos.lon, d.la, d.lo) <= C.RADIO_ZONA);
+    const hoy = hoyDia(), enZona = (docs || []).filter(d => d.p > 0 && A.puntoValido(d.la, d.lo) && A.distancia(pos.lat, pos.lon, d.la, d.lo) <= C.RADIO_ZONA);
+    const vig = enZona.filter(d => C.vigente(d));
     const hog = new Map();
     let anonimos = 0;
     for (const d of vig) { if (typeof d.h === 'string' && d.h) hog.set(d.h, (hog.get(d.h) || 0) + 1); else anonimos++; }
@@ -4340,15 +4679,16 @@ const Cerca = (() => {
     let propios = [];
     try { propios = JSON.parse(localStorage.getItem('libreta.propios') || '[]'); } catch (e) { propios = []; }
     const cerca = new Map();
-    for (const d of vig) {
-      if (propios.includes(d.id) || typeof d.t !== 'string') continue;
+    // para confirmar: los vigentes y los que vencieron hace poco (quien está ahí puede decir que siguen)
+    for (const d of enZona) {
+      if (propios.includes(d.id) || typeof d.t !== 'string' || !(d.d >= hoy - 4)) continue;
       const dist = A.distancia(pos.lat, pos.lon, d.la, d.lo);
       if (dist > 150) continue;
       const c = cerca.get(d.k) || { k: d.k, n: nombreDeRef(d.k) || d.n || 'este comercio', dist, docs: [] };
       c.docs.push(d); cerca.set(d.k, c);
     }
     const aca = [...cerca.values()].sort((a, b) => a.dist - b.dist)[0] || null;
-    E.barrio = { estado: docs ? 'listo' : 'error', t: Date.now(), precios: vig.length, hogares: [...hog].map(([h, n]) => ({ h, n })).sort((a, b) => b.n - a.n), anonimos, aca, pos };
+    E.barrio = { estado: docs ? 'listo' : 'error', t: Date.now(), precios: vig.length, hogares: [...hog].map(([h, n]) => ({ h, n })).sort((a, b) => b.n - a.n), anonimos, aca, pos, vig, docs: enZona };
     if (E.tab === 'novedades') pintar();
   }
   function bloqueBarrio() {
@@ -4366,11 +4706,14 @@ const Cerca = (() => {
     }
     if (B && B.estado === 'listo') {
       const top = B.hogares.slice(0, 5);
-      partes.push(h`<p class="tenue chico">En tu zona hay <strong>${B.precios} ${N.plural(B.precios, 'precio vigente', 'precios vigentes')}</strong> que cargaron los hogares.</p>
+      partes.push(h`<p class="tenue chico">En tu zona hay <strong>${B.precios} ${N.plural(B.precios, 'precio vigente', 'precios vigentes')}</strong> que cargaron los hogares en las últimas 24 horas.</p>
         ${top.length ? h`<p class="chico"><strong>Los hogares que más aportan:</strong></p><ol class="ranking">${top.map(x => h`<li${atr('class="yo"', !!mio && x.h === mio)}><span>${x.h}${mio && x.h === mio ? ' (vos)' : ''}</span><strong>${x.n}</strong></li>`)}</ol>
           ${!mio ? h`<p class="tenue chico">Para figurar acá, elegí un nombre público para tu hogar en Ajustes.</p>` : ''}` : ''}`);
     }
-    partes.push(h`<div class="acciones"><button type="button" class="btn btn-chico" data-act="invitar-barrio">${ico('familia')}Invitar vecinos</button></div>`);
+    const racha = rachaActual();
+    if (racha >= 2) partes.splice(1, 0, h`<p class="racha">${img3d('fire', 'i3d', 34)}<span><strong>${racha} semanas seguidas</strong> ahorrando o avisando precios. ¡Seguí así!</span></p>`);
+    partes.push(h`<div class="acciones"><button type="button" class="btn btn-chico" data-act="invitar-barrio">${ico('familia')}Invitar vecinos</button>
+      <button type="button" class="btn btn-chico" data-act="cartel">${img3d('printer', 'i3d', 22)}Cartel con QR para imprimir</button></div>`);
     return h`<div class="bloque barrio"><h2 class="bloque-t">Tu barrio</h2>${partes}</div>`;
   }
 
@@ -4414,7 +4757,7 @@ const Cerca = (() => {
     }
     if (E.hoja !== H) return;
     it.ocupado = false; it.error = ok ? '' : 'No se pudo guardar. Probá de nuevo.';
-    if (ok) { it.estado = cambio ? 'cambio' : 'sigue'; it.abierto = false; }
+    if (ok) { it.estado = cambio ? 'cambio' : 'sigue'; it.abierto = false; celebrar(); }
     renderHoja();
   }
 
@@ -4432,6 +4775,7 @@ const Cerca = (() => {
   const POR_KILO = new Set(['Papa', 'Cebolla', 'Tomate', 'Banana', 'Manzana', 'Pollo', 'Carne picada']);
   function vistaArranque(H) {
     const n = Object.values(H.sel).filter(Boolean).length, faltan = Object.values(H.sel).filter(v => v === 2).length;
+    const listo = H.base ? `Guardar${faltan ? ` (${faltan} a la lista)` : ''}` : n ? `Cargar ${n}${faltan ? ` (${faltan} a la lista)` : ''}` : 'Elegí algo';
     return marco('¿Qué hay en tu casa?', h`<div class="hoja-cuerpo">
       <p class="tenue chico">Tocá una vez lo que <strong>hay</strong>, dos veces lo que <strong>falta</strong> (va a la lista de compras). Lo que no usás, dejalo. Después se ajusta todo.</p>
       ${BASICOS.map(([cat, l]) => h`<div class="campo"><span>${N.CATS[cat]}</span><div class="chips envuelve" role="group">${l.map(nom => {
@@ -4440,26 +4784,69 @@ const Cerca = (() => {
       })}</div></div>`)}
       ${H.error ? h`<p class="error" role="alert">${H.error}</p>` : ''}
       <div class="hoja-pie"><button type="button" class="btn" data-act="cerrar">Ahora no</button>
-        <button type="button" class="btn btn-principal" data-act="arranque-listo"${atr('disabled', !n || H.ocupado)}>${H.ocupado ? 'Cargando…' : n ? `Cargar ${n}${faltan ? ` (${faltan} a la lista)` : ''}` : 'Elegí algo'}</button></div></div>`);
+        <button type="button" class="btn btn-principal" data-act="arranque-listo"${atr('disabled', (!n && !H.base) || H.ocupado)}>${H.ocupado ? 'Guardando…' : listo}</button></div></div>`);
   }
   async function guardarArranque() {
     const H = E.hoja;
     if (!H || H.tipo !== 'arranque' || H.ocupado || !puede()) return;
     const ya = new Set(V.prods.filter(([, p]) => !p.ejemplo).map(([, p]) => N.norm(p.nombre)));
-    const lista = [];
+    const lista = [], base = V.prods.filter(([, p]) => p.base && BASICOS.some(([, l]) => l.includes(p.nombre)));
     for (const [cat, l] of BASICOS) for (const nom of l) if (H.sel[nom] && !ya.has(N.norm(nom))) lista.push({ nom, cat, v: H.sel[nom] });
     H.ocupado = true; renderHoja();
-    let n = 0;
+    let n = 0, quitados = 0;
     try {
+      // lo básico precargado: lo destildado se borra, lo que falta pasa a la lista, y deja de ser «precargado»
+      for (const [id, p] of base) {
+        const v = H.sel[p.nombre] || 0;
+        if (!v) { await enCola(id, () => escribir(() => E.db.doc('productos/' + id).delete())); E.prod.delete(id); cola.delete(id); quitados++; continue; }
+        const campos = v === 2 ? { stock: 0, pedido: hoyDia(), base: false } : { base: false };
+        if (v === 2 && +p.stock <= 0 && p.pedido) delete campos.pedido;
+        await enCola(id, () => escribir(() => E.db.doc('productos/' + id).update(campos)));
+        E.prod.set(id, Object.assign({}, E.prod.get(id) || p, campos));
+        n++;
+      }
+      if (base.length && E.ajustes.semilla === 1) cambiarAjustes({ semilla: 2 }).catch(() => {});
       for (const x of lista) {
         await crearProducto({ nombre: x.nom, categoria: x.cat, stock: x.v === 1 ? 1 : 0, pedido: x.v === 2 ? hoyDia() : 0, suelto: true, porKg: POR_KILO.has(x.nom) });
         n++;
       }
     } catch (e) { if (E.hoja === H) { H.ocupado = false; H.error = textoFallo(e); renderHoja(); } return; }
     if (E.hoja === H) cerrarHoja();
-    const f = lista.filter(x => x.v === 2).length;
+    const f = lista.filter(x => x.v === 2).length + base.filter(([, p]) => H.sel[p.nombre] === 2).length;
     pintar();
-    avisar(`Listo: ${n} ${N.plural(n, 'producto cargado', 'productos cargados')}${f ? `, ${f} en la lista de compras` : ''}`, f ? { rotulo: 'Ver la lista', fn: () => irA('compras') } : undefined);
+    avisar(base.length ? `Listo: la alacena quedó con ${E.prod.size} ${N.plural(E.prod.size, 'producto', 'productos')}${quitados ? ` (${quitados} ${N.plural(quitados, 'borrado', 'borrados')})` : ''}${f ? `, ${f} en la lista de compras` : ''}`
+      : `Listo: ${n} ${N.plural(n, 'producto cargado', 'productos cargados')}${f ? `, ${f} en la lista de compras` : ''}`, f ? { rotulo: 'Ver la lista', fn: () => irA('compras') } : undefined);
+  }
+
+  /* ---------- lo básico de cualquier casa ----------
+     Un hogar nuevo no arranca con la alacena vacía: se cargan los básicos (con 1 de cada uno) y un aviso
+     arriba explica que se ajustan con − o se borran. Una sola vez por hogar (ajustes.semilla). */
+  const INICIAL = [['Yerba', 'almacen'], ['Azúcar', 'almacen'], ['Aceite', 'almacen'], ['Fideos', 'almacen'], ['Arroz', 'almacen'], ['Harina', 'almacen'], ['Sal', 'almacen'], ['Café', 'almacen'],
+    ['Leche', 'lacteos'], ['Huevos', 'lacteos'], ['Manteca', 'lacteos'], ['Papa', 'frescos'], ['Cebolla', 'frescos'], ['Tomate', 'frescos'], ['Pan', 'panaderia'],
+    ['Lavandina', 'limpieza'], ['Detergente', 'limpieza'], ['Papel higiénico', 'higiene'], ['Jabón', 'higiene']];
+  let sembrando = false;
+  // (solo en la versión publicada: las de un solo archivo traen sus datos de ejemplo)
+  const quiereInicial = () => { if (!C) return false; try { return typeof alacenaInicial === 'undefined' || alacenaInicial !== false; } catch (e) { return true; } };
+  async function sembrarInicial() {
+    if (sembrando || !quiereInicial() || !E.db || E.lectura || E.conexion !== 'lista' || !E.prodListo || !E.ticListo || !E.ajListo) return;
+    if (E.ajustes.semilla || E.prod.size || E.tickets.length || E.puerta) return;
+    sembrando = true;
+    try {
+      await cambiarAjustes({ semilla: 1 });
+      for (const [nom, cat] of INICIAL) {
+        if (E.prod.size >= INICIAL.length + 5) break;
+        await crearProducto({ nombre: nom, categoria: cat, stock: 1, suelto: true, porKg: POR_KILO.has(nom), base: true });
+      }
+    } catch (e) { /* lo que no se pudo cargar, se carga a mano */ }
+    sembrando = false;
+    pintar();
+  }
+  function avisoInicial() {
+    if (E.ajustes.semilla !== 1 || !V.prods.some(([, p]) => p.base)) return '';
+    return h`<div class="aviso-inicial" data-escribe>
+      ${img3d('basket', 'ai-img', 76)}<p class="ai-t">Te cargamos lo básico de cualquier casa</p>
+      <p>Así no arrancás de cero. Tocá <strong>−</strong> en lo que no tengas (pasa a la lista de compras) y borrá desde su ficha lo que no uses.</p>
+      <div class="acciones"><button type="button" class="btn btn-chico btn-principal" data-act="inicial-listo">Entendido</button><button type="button" class="btn btn-chico" data-act="arranque">Elegir yo qué hay</button></div></div>`;
   }
 
   /* ---------- «avisame cuando baje» ---------- */
@@ -4551,12 +4938,23 @@ const Cerca = (() => {
           ${B.promos.length ? h`<p><strong>Promos que coinciden:</strong></p><ul class="ofertas">${B.promos.map(filaPromo)}</ul>` : ''}
           <p class="tenue chico">Los cargaron hogares de tu zona${B.precios.length ? ', del más barato al más caro' : ''}. Pueden haber cambiado.</p>`;
     }
-    return h`<div class="bloque buscador-cerca"><h2 class="bloque-t">Precios de tu zona</h2>
-      <div class="acciones"><button type="button" class="btn btn-principal" data-act="avisar-precio" data-escribe>${ico('mas')}Avisar un precio</button>
-        <button type="button" class="btn" data-act="mapa-vivo">${ico('mapa')}Mapa en vivo</button></div>
-      <form class="buscador" data-form="buscar-cerca" role="search"><label class="buscar">${ico('buscar')}<input type="search" id="bc-q" value="${E.buscaEscrito != null ? E.buscaEscrito : B.q || ''}" placeholder="Pizzeta, jamón, tomate…" enterkeyhint="search" autocomplete="off" maxlength="60" aria-label="Qué producto buscás"></label>
+    // como la portada de una app de delivery: el buscador arriba, los resultados abajo y una grilla de accesos con dibujos
+    const accesos = [
+      { act: 'avisar-precio', img: 'megaphone', t: 'Avisar un precio', escribe: true },
+      { act: 'mapa-vivo', img: 'world-map', t: 'Mapa en vivo' },
+      hayIA() ? { act: 'cocina', img: 'pot-of-food', t: '¿Qué cocino?' } : { act: 'acceso-cat', cat: 'almacen', img: 'canned-food', t: 'Almacén' },
+      { act: 'acceso-cat', cat: 'carnes', img: 'cut-of-meat', t: 'Carnes' },
+      { act: 'acceso-cat', cat: 'frescos', img: 'leafy-green', t: 'Verdulería' },
+      { act: 'acceso-cat', cat: 'lacteos', img: 'glass-of-milk', t: 'Lácteos' },
+      { act: 'acceso-cat', cat: 'panaderia', img: 'croissant', t: 'Panadería' },
+      { act: 'acceso-cat', cat: 'bebidas', img: 'cup-with-straw', t: 'Bebidas' },
+    ];
+    return h`<div class="bloque buscador-cerca">
+      <form class="buscador" data-form="buscar-cerca" role="search"><label class="buscar">${ico('buscar')}<input type="search" id="bc-q" value="${E.buscaEscrito != null ? E.buscaEscrito : B.q || ''}" placeholder="Pizzeta, yerba, pan…" enterkeyhint="search" autocomplete="off" maxlength="60" aria-label="Qué producto buscás"></label>
         <button type="submit" class="btn btn-principal">Buscar</button></form>
-      <div id="bc-res" aria-live="polite">${res}</div></div>`;
+      <div id="bc-res" aria-live="polite">${res}</div>
+      <ul class="accesos">${accesos.map(a => h`<li><button type="button" class="acceso" data-act="${a.act}"${a.cat ? h` data-cat="${a.cat}"` : ''}${a.escribe ? h` data-escribe` : ''}>
+        <span class="acceso-img">${img3d(a.img, 'i3d', 44)}</span><span class="acceso-t">${a.t}</span></button></li>`)}</ul></div>`;
   }
   async function buscarCerca() {
     const q = limpio(($('#bc-q') || {}).value || '').slice(0, 60);
@@ -4639,7 +5037,7 @@ const Cerca = (() => {
   const pbTope = p => [p.tope > 0 ? `tope ${N.plata(p.tope)}${/semana/.test(p.detalle || '') ? ' por semana' : ''}` : 'sin tope', p.minimo > 0 ? `mínimo ${N.plata(p.minimo)}` : ''].filter(Boolean).join(' · ');
   // Las sucursales cerca (hasta 8 km) de las cadenas con promo vigente: se buscan una vez por lugar.
   async function tiendasConPromo(pos) {
-    if (!pos || !puedeCerca()) return [];
+    if (!pos || !conMapa()) return [];
     await cargarPB();
     const k = A.celda(pos.lat, pos.lon);
     if (E.pbTiendas && E.pbTiendas.k === k) return E.pbTiendas.l;
@@ -4660,31 +5058,143 @@ const Cerca = (() => {
   function bloqueOfertasHoy() {
     if (!E.pb) { cargarPB(); return ''; }
     const pos = C.ultimaPosicion();
-    if (pos && (!E.pbTiendas || E.pbTiendas.k !== A.celda(pos.lat, pos.lon))) tiendasConPromo(pos).then(l => { if (l.length && E.tab === 'novedades') pintar(); });
+    if (pos && (!E.pbTiendas || E.pbTiendas.k !== A.celda(pos.lat, pos.lon))) tiendasConPromo(pos).then(l => { if (l.length && (E.tab === 'novedades' || E.puerta)) pintar(); });
     const dow = new Date().getDay(), hoy = ofertasDelDia(dow);
     if (!pbVigentes(pos).length) return '';
     const manana = ofertasDelDia((dow + 1) % 7);
     return h`<section class="ofertas-hoy" aria-labelledby="oh-t">
-      <div class="oh-cabeza"><p class="oh-dia">Hoy, ${DIAS_SEMANA[dow]}</p><h2 id="oh-t">${hoy.length ? `${hoy.length} ${N.plural(hoy.length, 'oferta', 'ofertas')} para hoy` : 'Hoy no hay promos de bancos'}</h2></div>
+      <div class="oh-cabeza">${img3d('money-bag', 'oh-cab-img', 64)}<p class="oh-dia">Hoy, ${DIAS_SEMANA[dow]}</p><h2 id="oh-t">${hoy.length ? `${hoy.length} ${N.plural(hoy.length, 'oferta', 'ofertas')} para hoy` : 'Hoy no hay promos de bancos'}</h2>
+        ${hoy.length ? h`<p class="oh-reloj">${img3d('stopwatch', 'oh-reloj-img', 26)}<span>Terminan en</span> <span class="oh-cuenta" id="oh-cuenta">${faltaMedianoche()}</span></p>` : ''}</div>
       ${hoy.length ? h`<ul class="oh-tarjetas">${hoy.map((x, i) => h`<li class="oh-tarjeta t${i % 4}">
+          ${img3d(/dni|modo|mercado pago|app|qr/i.test(x.p.medio) ? 'mobile-phone' : 'credit-card', 'oh-img', 58)}
           <p class="oh-pct">${x.p.pct}<span>%</span></p>
           <p class="oh-cadena">${x.p.cadena}</p>
           <p class="oh-medio">con ${x.p.medio}</p>
           <p class="oh-tope">${pbTope(x.p)}</p>
-          ${x.tienda ? h`<button type="button" class="oh-donde" data-act="oferta-mapa" data-k="${x.tienda.id}">${ico('lugar')}a ${A.distTexto(x.tienda.dist)} · ver</button>` : h`<p class="oh-tope">${x.p.detalle || ''}</p>`}
+          ${x.tienda ? '' : h`<p class="oh-tope">${x.p.detalle || ''}</p>`}
+          <div class="oh-botones">${x.tienda ? h`<button type="button" class="oh-donde" data-act="oferta-mapa" data-k="${x.tienda.id}">${ico('lugar')}a ${A.distTexto(x.tienda.dist)} · ver</button>` : ''}
+            <button type="button" class="oh-compartir" data-act="compartir-oferta" data-id="${x.p.id}" data-i="${i}" aria-label="Compartir la oferta de ${x.p.cadena}">${ico('compartir')}</button></div>
         </li>`)}</ul>` : ''}
       ${manana.length ? h`<p class="oh-manana"><strong>Mañana:</strong> ${manana.slice(0, 4).map(x => `${x.p.pct} % ${x.p.cadena}`).join(' · ')}${manana.length > 4 ? '…' : ''}</p>` : ''}
       ${!pos ? h`<p class="oh-nota">Activá tu ubicación (más abajo) y te muestro cuál te queda más cerca.</p>` : ''}
       <p class="oh-nota">Promos de bancos y billeteras de ${N.nombreMes ? N.nombreMes((E.pb.actualizado || N.hoyISO()).slice(0, 7)) : 'este mes'}. Confirmá condiciones y tope en la app de tu banco. <button type="button" class="enlace" data-act="ofertas-fuentes">Fuentes</button></p>
     </section>`;
   }
+  // Cuánto falta para que terminen las de hoy (a la medianoche), como los «flash deals»: hh:mm:ss
+  function faltaMedianoche() {
+    const a = new Date(), f = new Date(a.getFullYear(), a.getMonth(), a.getDate() + 1) - a, s = Math.max(0, Math.floor(f / 1000));
+    return [Math.floor(s / 3600), Math.floor(s / 60) % 60, s % 60].map(n => String(n).padStart(2, '0')).join(':');
+  }
+  setInterval(() => { const el = document.getElementById('oh-cuenta'); if (el) el.textContent = faltaMedianoche(); }, 1000);
   // El cartel corto de arriba de la alacena y de la lista de compras.
   function avisoOfertaHoy() {
     if (!E.pb) { cargarPB(); return ''; }
     const l = ofertasDelDia(new Date().getDay()).filter(x => x.tienda || !(x.p.cadenas || []).length || !C.ultimaPosicion());
     if (!l.length) return '';
     const x = l[0];
-    return h`<a class="banda-oferta" href="#novedades" data-tab="novedades"><span class="bo-pct">${x.p.pct}%</span><span><strong>Hoy en ${x.p.cadena}</strong> con ${x.p.medio}${x.tienda ? ` · a ${A.distTexto(x.tienda.dist)}` : ''}${l.length > 1 ? ` · y ${l.length - 1} ${N.plural(l.length - 1, 'oferta más', 'ofertas más')}` : ''}</span><span class="bo-ver">Ver ›</span></a>`;
+    return h`<a class="banda-oferta" href="#novedades" data-tab="novedades"><span class="bo-pct">${x.p.pct}%</span><span><strong>Hoy en ${x.p.cadena}</strong> con ${x.p.medio}${x.tienda ? ` · a ${A.distTexto(x.tienda.dist)}` : ''}${l.length > 1 ? ` · y ${l.length - 1} ${N.plural(l.length - 1, 'oferta más', 'ofertas más')}` : ''}</span>${img3d('shopping-bags', 'bo-img', 34)}<span class="bo-ver">Ver ›</span></a>`;
+  }
+
+  /* ---------- «Estás en …»: al entrar a un comercio ----------
+     Con la app abierta y la ubicación activada, el teléfono mira dónde está. La comparación se hace acá: la ubicación
+     no va a ningún servidor. Si la persona se queda unos segundos dentro de un comercio, avisa una vez por día: las
+     promos de hoy en esa cadena y los precios que cargaron otros hogares ahí, para confirmar si siguen.
+     Ningún navegador deja mirar la ubicación con la app cerrada o el teléfono bloqueado: es con la app abierta. */
+  const ENTRADA = { dentro: 45, quieto: +window.LIBRETA_QUIETO_MS || 20000, precision: 120 };
+  const vig = { watch: null, reloj: null, cand: null, ult: null, ocupado: false, arrancando: false };
+  const quiereEntrada = () => leerLocal('libreta.alEntrar', true) !== false;
+  async function vigilarEntrada() {
+    const debe = quiereEntrada() && conMapa() && !!navigator.geolocation && !!C.ultimaPosicion() && document.visibilityState === 'visible';
+    if (!debe) { pararVigilancia(); return; }
+    if (vig.watch != null || vig.arrancando) return;
+    vig.arrancando = true;
+    try {
+      // sin permiso ya dado no se pregunta nada: la ubicación la activa la persona, en Ofertas
+      const st = navigator.permissions && navigator.permissions.query ? await navigator.permissions.query({ name: 'geolocation' }).catch(() => null) : null;
+      if (st && st.state !== 'granted') return;
+      if (vig.watch != null || document.visibilityState !== 'visible') return;
+      vig.watch = navigator.geolocation.watchPosition(p => alMoverse({ lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy, t: Date.now() }),
+        () => {}, { enableHighAccuracy: true, maximumAge: 15000, timeout: 60000 });
+      vig.reloj = setInterval(() => { if (vig.ult) revisarEntrada(); }, Math.min(5000, Math.max(250, ENTRADA.quieto / 4)));
+    } finally { vig.arrancando = false; }
+  }
+  function pararVigilancia() {
+    if (vig.watch != null) { try { navigator.geolocation.clearWatch(vig.watch); } catch (e) { /* ya estaba */ } vig.watch = null; }
+    if (vig.reloj) { clearInterval(vig.reloj); vig.reloj = null; }
+    vig.cand = null;
+  }
+  function alMoverse(pos) {
+    if (!(pos.acc <= ENTRADA.precision) || !A.puntoValido(pos.lat, pos.lon)) return;
+    vig.ult = pos;
+    C.anotarPosicion(pos);
+    revisarEntrada();
+  }
+  async function revisarEntrada() {
+    const pos = vig.ult;
+    if (!pos || vig.ocupado || Date.now() - pos.t > 180000) return;
+    vig.ocupado = true;
+    try {
+      const lista = lugaresConocidos();
+      const lim = ENTRADA.dentro + Math.min(pos.acc || 0, 35);
+      const t = lista.map(l => Object.assign({}, l, { dist: A.distancia(pos.lat, pos.lon, l.lat, l.lon) })).filter(l => l.dist <= lim).sort((a, b) => a.dist - b.dist)[0];
+      if (!t) { vig.cand = null; return; }
+      if (!vig.cand || vig.cand.id !== t.id) { vig.cand = { id: t.id, desde: Date.now() }; return; }
+      if (Date.now() - vig.cand.desde < ENTRADA.quieto) return;
+      const vistos = leerLocal('libreta.entradas', {}), hoy = hoyDia();
+      if (vistos[t.id] === hoy) return;
+      vistos[t.id] = hoy;
+      for (const k of Object.keys(vistos)) if (!(vistos[k] >= hoy - 2)) delete vistos[k];
+      guardarLocal('libreta.entradas', vistos);
+      const r = await queHayEn(t);
+      if (r.promos.length || r.zona.length || r.precios.length) avisarEntrada(t, r);
+    } finally { vig.ocupado = false; }
+  }
+  /* Los comercios contra los que se compara la posición: solo los que la libreta ya tiene en el teléfono (los súpers con
+     promo que se buscaron al mirar las ofertas, los que tienen precios de la zona, los del hogar y los recordados).
+     Mirar dónde se está no le pide nada a ningún servicio: la ubicación no sale del teléfono. */
+  function lugaresConocidos() {
+    const m = new Map(), poner = (id, nombre, lat, lon) => { if (id && A.puntoValido(lat, lon) && !m.has(id)) m.set(id, { id, nombre: nombre || nombreDeRef(id) || 'Comercio', lat, lon }); };
+    for (const t of (E.pbTiendas && E.pbTiendas.l) || []) poner(t.id, t.nombre, t.lat, t.lon);
+    for (const d of (E.barrio && E.barrio.docs) || []) poner(d.k, d.n || nombreDeRef(d.k), d.la, d.lo);
+    for (const [k, c] of Object.entries(E.ajustes.comercios || {})) if (/^(osm|com):/.test(k) && c) poner(k, c.p || c.n, c.la, c.lo);
+    for (const l of C.recordados()) poner(l.id, l.nombre, l.lat, l.lon);
+    return [...m.values()];
+  }
+  // Lo que hay para contar en ese comercio: promos de bancos de hoy, promos que cargaron los hogares y precios para confirmar.
+  async function queHayEn(t) {
+    await cargarPB();
+    const dow = new Date().getDay();
+    const promos = pbDeComercio(t.nombre, t.lat, t.lon, dow);
+    const zona = promosVigentes().filter(x => x.k === t.id && promoDeHoy(x, dow));
+    let precios = [];
+    if (puedeCerca() && E.ajustes.compartir !== false) {
+      try {
+        const propios = leerLocal('libreta.propios', []);
+        precios = (await C.deComercio(t.id, t.lat, t.lon)).filter(d => !propios.includes(d.id));
+      } catch (e) { precios = []; }
+    }
+    return { promos, zona, precios };
+  }
+  function textoEntrada(r) {
+    return [r.promos.length ? `Hoy: ${r.promos.map(p => `${p.pct} % con ${p.medio}`).join(' · ')}` : '', r.zona.length ? `${r.zona.length} ${N.plural(r.zona.length, 'promo', 'promos')} de vecinos` : '',
+      r.precios.length ? `${r.precios.length} ${N.plural(r.precios.length, 'precio', 'precios')} de vecinos para confirmar` : ''].filter(Boolean).join(' · ');
+  }
+  function avisarEntrada(t, r) {
+    const nombre = nombreDeRef(t.id) || t.nombre, cuerpo = textoEntrada(r);
+    const hoja = { tipo: 'entrada', t, nombre, promos: r.promos, zona: r.zona, precios: r.precios };
+    E.entrada = hoja;
+    if (!E.hoja && (!E.puerta || E.puerta.modo === 'invitado')) abrirHoja(hoja);
+    else avisar(`Estás en ${nombre}: ${cuerpo}`, { rotulo: 'Ver', fn: () => { if (!E.hoja) abrirHoja(E.entrada); } });
+    // y la notificación del teléfono (suena o vibra), si la persona las permitió
+    let notifico = false;
+    try {
+      if ('Notification' in window && Notification.permission === 'granted' && navigator.serviceWorker && navigator.serviceWorker.controller) {
+        notifico = true;
+        navigator.serviceWorker.ready.then(reg => reg.showNotification(`Estás en ${nombre}`, { body: cuerpo, tag: 'entrada', renotify: true, icon: 'iconos/icono-192.png', badge: 'iconos/icono-192.png', lang: 'es',
+          data: { url: './#novedades', accion: 'entrada', k: t.id } })).catch(() => {});
+      }
+    } catch (e) { notifico = false; }
+    if (!notifico && navigator.vibrate) { try { navigator.vibrate([90, 60, 90]); } catch (e) { /* sin vibración */ } }
   }
 
   /* ---------- novedades ---------- */
@@ -4710,7 +5220,7 @@ const Cerca = (() => {
     consejos.sort((a, b) => b.c.ahorro - a.c.ahorro);
     $('#no-resumen').textContent = nov.cambios.length ? `${nov.cambios.length} ${N.plural(nov.cambios.length, 'producto cambió', 'productos cambiaron')} de precio en los últimos 45 días` : '';
     if (puedeCerca()) actualizarBarrio();
-    const partes = [puedeCerca() ? bloqueOfertasHoy() : '', bloqueBuscador(), puedeCerca() ? bloqueBarrio() : '', bloqueAhorro(), bloqueCanasta(inf), bloquePromos(), bloqueCercaNovedades()];
+    const partes = [bloqueBuscador(), puedeCerca() ? bloqueOfertasHoy() : '', puedeCerca() ? bloqueEstrella() : '', puedeCerca() ? bloqueBarrio() : '', bloqueAhorro(), bloqueCanasta(inf), bloquePromos(), bloqueCercaNovedades()];
     if (consejos.length) {
       partes.push(h`<div class="bloque"><h2 class="bloque-t">Para la próxima compra</h2>
         <ul class="consejos">${consejos.slice(0, 8).map(k => h`<li><strong>${k.x.p.nombre}</strong><span class="compra-consejo ${k.c.tipo}">${k.c.texto}</span></li>`)}</ul>
@@ -4721,7 +5231,7 @@ const Cerca = (() => {
         ${nov.cambios.length > 15 ? h`<p class="tenue chico">Y ${nov.cambios.length - 15} más. El detalle de cada uno está en su ficha, en la alacena.</p>` : ''}</div>`);
     }
     const hay = partes.some(x => x && x.__h);
-    caja.innerHTML = val(h`${partes}${nov.cambios.length || inf.pct != null ? '' : h`<div class="vacio">${E.conexion === 'esperando' || (E.conexion === 'lista' && !E.prodListo) ? cargando('Cargando lo guardado…') : ''}
+    caja.innerHTML = val(h`${partes}${nov.cambios.length || inf.pct != null ? '' : h`<div class="vacio con-img">${img3d('chart-increasing', 'vacio-img', 88)}${E.conexion === 'esperando' || (E.conexion === 'lista' && !E.prodListo) ? cargando('Cargando lo guardado…') : ''}
       <h3>${hay ? 'Todavía no hay cambios de precio' : 'Acá aparecen los cambios de precio'}</h3>
       <p>Cada vez que anotás lo que pagaste, la libreta compara con la vez anterior: cuánto subió cada cosa, cómo viene la canasta de tu casa y dónde conviene comprar.</p></div>`}${bloqueNotas()}`);
     if (E.prodListo && nov.claves.length) guardarLocal('libreta.novVistas', nov.claves.slice(0, 300));
@@ -4741,13 +5251,14 @@ const Cerca = (() => {
     $('#al-filtros').hidden = filas.length < 6;
     const cocina = $('#al-cocina');
     if (cocina) cocina.hidden = !hayIA() || !filas.some(f => !f.p.ejemplo && +f.p.stock > 0);
-    $('#al-chips').innerHTML = val(chips.map(([v, t]) => h`<button type="button" class="chip" data-act="chip" data-chip="${v}" aria-pressed="${String(E.filtro.chip === v)}">${t}</button>`));
+    $('#al-chips').innerHTML = val(chips.map(([v, t]) => h`<button type="button" class="chip${EMOJI_CAT[v] ? ' con-i' : ''}" data-act="chip" data-chip="${v}" aria-pressed="${String(E.filtro.chip === v)}">${EMOJI_CAT[v] ? img3d(EMOJI_CAT[v], 'chip-i', 22) : ''}${t}</button>`));
 
     const bo = $('#al-oferta');
-    if (bo) bo.innerHTML = val(puedeCerca() ? avisoOfertaHoy() : '');
+    if (bo) bo.innerHTML = val(h`${puedeCerca() ? avisoOfertaHoy() : ''}${avisoInicial()}`);
     const caja = $('#al-lista');
     if (!filas.length) {
-      caja.innerHTML = val(h`<div class="vacio">
+      sembrarInicial();
+      caja.innerHTML = val(h`<div class="vacio con-img">${img3d('basket', 'vacio-img', 88)}
         ${E.conexion === 'esperando' || (E.conexion === 'lista' && !E.prodListo) ? cargando('Cargando lo guardado…') : ''}
         <h3>Acá va tu alacena</h3>
         <p>Cada producto con cuánto queda y para cuántos días alcanza según lo que se consume en casa.</p>
@@ -4770,7 +5281,7 @@ const Cerca = (() => {
     for (const c of N.CATS_ALACENA) {
       const g = vis.filter(f => catDe(f.p) === c).sort((x, y) => String(x.p.nombre).localeCompare(String(y.p.nombre), 'es'));
       if (!g.length) continue;
-      grupos.push(h`<section class="grupo"><h2 class="grupo-t"><span>${N.CATS[c]}</span><span>${g.length}</span></h2>${g.map(filaProducto)}</section>`);
+      grupos.push(h`<section class="grupo c-${c}"><h2 class="grupo-t"><span>${N.CATS[c]}</span><span>${g.length}</span></h2>${g.map(filaProducto)}</section>`);
     }
     caja.innerHTML = val(grupos);
     if (foco) {
@@ -4780,9 +5291,32 @@ const Cerca = (() => {
       else if (el) { const otro = $('[data-act="mas"]', el); if (otro) otro.focus({ preventScroll: true }); }
     }
   }
+  /* Un dibujito por producto (por palabra del nombre; si no, el de su categoría): la alacena se lee de un vistazo. */
+  const EMOJI_CAT = { almacen: 'canned-food', lacteos: 'glass-of-milk', frescos: 'leafy-green', carnes: 'cut-of-meat', panaderia: 'baguette-bread', bebidas: 'cup-with-straw', congelados: 'ice', limpieza: 'sponge', higiene: 'lotion-bottle', mascotas: 'paw-prints', farmacia: 'pill', hogar: 'house', otros: 'shopping-cart' };
+  const EMOJI = [
+    [/yerba|(^|\s)mate\b/, 'mate'], [/cafe/, 'hot-beverage'], [/\bte\b|saquito/, 'teacup-without-handle'], [/azucar|edulcorante/, 'candy'], [/aceite|oliva/, 'olive'], [/fideo|spaghetti|tallarin|mostachol|tirabuzon|pasta\b|ravioles|noqui/, 'spaghetti'],
+    [/arroz/, 'cooked-rice'], [/harina|polenta|premezcla/, 'sheaf-of-rice'], [/\bsal\b/, 'salt'], [/galleti|bizcocho|alfajor/, 'cookie'], [/tomate|pure de tom/, 'tomato'], [/mayonesa|ketchup|mostaza|aderezo/, 'jar'],
+    [/chocolate|cacao|nesquik/, 'chocolate-bar'], [/mermelada|dulce de/, 'honey-pot'], [/atun|caballa|sardina/, 'fish'], [/arveja|choclo|lenteja|poroto|garbanzo/, 'beans'], [/cereal|avena|granola/, 'bowl-with-spoon'], [/sopa|caldo/, 'steaming-bowl'],
+    [/leche/, 'glass-of-milk'], [/huevo/, 'egg'], [/manteca/, 'butter'], [/queso|muzza|mozza|reggianito|ricota/, 'cheese-wedge'], [/yogur/, 'spoon'], [/crema/, 'soft-ice-cream'],
+    [/papa\b|papas\b|batata/, 'potato'], [/cebolla/, 'onion'], [/ajo\b/, 'garlic'], [/zanahoria/, 'carrot'], [/banana/, 'banana'], [/manzana/, 'red-apple'], [/naranja|mandarina/, 'tangerine'], [/limon/, 'lemon'], [/lechuga|acelga|espinaca/, 'leafy-green'],
+    [/zapallo|calabaza/, 'jack-o-lantern'], [/pimiento|morron/, 'bell-pepper'], [/palta/, 'avocado'], [/uva/, 'grapes'], [/frutilla/, 'strawberry'], [/pera\b/, 'pear'], [/durazno/, 'peach'], [/choclo/, 'ear-of-corn'], [/brocoli/, 'broccoli'], [/pepino|zapallito/, 'cucumber'],
+    [/pollo|pata muslo|suprema/, 'poultry-leg'], [/carne|asado|nalga|bife|vacio|matambre|milanesa|picada|cuadril|peceto/, 'cut-of-meat'], [/jamon|fiambre|salame|mortadela/, 'bacon'], [/chorizo|salchicha|morcilla/, 'hot-dog'], [/pescado|merluza|filet/, 'fish'], [/cerdo|bondiola|pechito/, 'pig'],
+    [/pan\b|pan |baguette|felipe|lactal/, 'bread'], [/factura|medialuna/, 'croissant'], [/pizza|prepizza|pizzeta/, 'pizza'], [/tapa|empanada/, 'dumpling'], [/torta|bizcochuelo/, 'shortcake'],
+    [/agua/, 'droplet'], [/gaseosa|coca|sprite|pepsi|fanta/, 'cup-with-straw'], [/cerveza/, 'beer-mug'], [/vino/, 'wine-glass'], [/jugo/, 'beverage-box'], [/soda/, 'bubbles'],
+    [/helado/, 'ice-cream'], [/hielo/, 'ice'], [/hamburguesa|medallon/, 'hamburger'], [/papas fritas|bastones/, 'french-fries'],
+    [/lavandina|cloro/, 'test-tube'], [/detergente|lavavajilla/, 'sponge'], [/jabon en polvo|jabon liquido para ropa|suavizante/, 'basket'], [/esponja|trapo|rejilla/, 'sponge'], [/bolsa/, 'shopping-bags'], [/insecticida|raid/, 'fly'],
+    [/papel higienico|rollo/, 'roll-of-paper'], [/servilleta|rollo de cocina/, 'roll-of-paper'], [/jabon/, 'soap'], [/pasta dental|dentifrico|cepillo/, 'toothbrush'], [/shampoo|acondicionador|crema de enjuague/, 'lotion-bottle'], [/desodorante/, 'lotion-bottle'], [/panal|toallita/, 'baby'],
+    [/perro|gato|alimento balanceado|piedritas/, 'paw-prints'],
+  ];
+  function iconoDe(p) {
+    const n = N.norm(p.nombre || '');
+    for (const [re, e] of EMOJI) if (re.test(n)) return e;
+    return EMOJI_CAT[catDe(p)] || 'shopping-cart';
+  }
   function filaProducto(f) {
     const p = f.p, s = N.situacion(f.a), meta = [p.marca, p.presentacion].filter(Boolean).join(' · ');
     return h`<div class="fila" data-id="${f.id}">
+      <span class="fila-ico c-${catDe(p)}"${atr('hidden', !CON_3D)} aria-hidden="true">${img3d(iconoDe(p), 'i3d', 34)}${fotoValida(p.foto) ? h`<img class="foto-prod" src="${p.foto}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">` : ''}</span>
       <button type="button" class="fila-txt" data-act="producto" data-id="${f.id}">
         <span class="fila-nombre">${p.nombre}</span>
         ${meta ? h`<span class="fila-meta">${meta}</span>` : ''}
@@ -4848,8 +5382,8 @@ const Cerca = (() => {
     const caja = $('#co-lista');
     if (!compras.length) {
       caja.innerHTML = val(h`${V.prods.length
-        ? h`<div class="vacio"><h3>No hace falta comprar nada</h3><p>Con lo que hay en la alacena alcanza para ${FREC_HASTA[frec] || `los próximos ${frec} días`}. A medida que se vaya usando, acá aparece qué reponer y cuánto.</p></div>`
-        : h`<div class="vacio">${E.conexion === 'esperando' ? cargando('Cargando lo guardado…') : ''}<h3>Acá aparece qué comprar</h3>
+        ? h`<div class="vacio con-img">${img3d('sparkles', 'vacio-img', 88)}<h3>No hace falta comprar nada</h3><p>Con lo que hay en la alacena alcanza para ${FREC_HASTA[frec] || `los próximos ${frec} días`}. A medida que se vaya usando, acá aparece qué reponer y cuánto.</p></div>`
+        : h`<div class="vacio con-img">${img3d('shopping-cart', 'vacio-img', 88)}${E.conexion === 'esperando' ? cargando('Cargando lo guardado…') : ''}<h3>Acá aparece qué comprar</h3>
           <p>La lista se arma sola con lo que se terminó o está por terminarse, y sugiere cuánto llevar según el ritmo de consumo de la casa.</p></div>`}${bloqueNotas()}`);
       return;
     }
@@ -4952,7 +5486,7 @@ const Cerca = (() => {
   function renderGastos() {
     const caja = $('#ga-cuerpo'), tk = V.tickets, hoyI = N.hoyISO(), mesHoy = N.mesDe(hoyI);
     if (!tk.length) {
-      caja.innerHTML = val(h`<div class="vacio">${E.conexion === 'esperando' || (E.conexion === 'lista' && !E.ticListo) ? cargando('Cargando lo guardado…') : ''}
+      caja.innerHTML = val(h`<div class="vacio con-img">${img3d('receipt', 'vacio-img', 88)}${E.conexion === 'esperando' || (E.conexion === 'lista' && !E.ticListo) ? cargando('Cargando lo guardado…') : ''}
         <h3>Acá se ve el gasto mes a mes</h3>
         <p>${Datos.local ? 'Cargá cada gasto con su total y, si querés, con la foto del ticket. Con eso la libreta arma el gasto de cada mes y en qué se fue.'
           : 'Subí la foto de un ticket y la libreta anota el comercio, la fecha, el total y cada producto. Con eso arma el gasto de cada mes y en qué se fue.'}</p></div>`);
@@ -5130,7 +5664,12 @@ const Cerca = (() => {
         dato = h`<div class="dato">${l}</div>${bloqueAlerta(H.id, p)}${bloquePrecios(H.id, p)}`;
       }
       const par = H.parecido ? verProd(H.parecido) : null;
+      // arriba: la foto del envase o el dibujo; si tiene código de barras y no foto, se la puede buscar
+      const foto = p ? (fotoValida(p.foto) ? p.foto : '') : fotoValida(f.foto) ? f.foto : '';
+      const cab = (p && CON_3D) || foto ? h`<div class="ficha-foto c-${p ? catDe(p) : N.CATS_ALACENA.includes(f.categoria) ? f.categoria : 'otros'}">${img3d(p ? iconoDe(p) : iconoDe({ nombre: f.nombre, categoria: f.categoria }), 'ficha-3d', 112)}${foto ? h`<img class="foto-prod" src="${foto}" alt="" referrerpolicy="no-referrer">` : ''}
+          ${p && !foto && /^\d{8,14}$/.test(p.codigo || '') && Lector.porCodigo ? h`<button type="button" class="ficha-buscar" data-act="buscar-foto" data-id="${H.id}" data-escribe>${ico('camara')}Buscar la foto del envase</button>` : ''}</div>` : '';
       return marco(H.id ? 'Editar producto' : 'Producto nuevo', h`<form class="form" data-form="producto" novalidate>
+        ${cab}
         ${H.mini ? h`<div class="conocido"><img class="mini" src="${H.mini}" alt=""><div><p class="chico">${H.aviso || ''}</p>
           ${H.puedeDetalle ? h`<button type="button" class="enlace" data-act="leer-detalle">Leer la foto otra vez, con más detalle</button>` : ''}</div></div>`
           : H.aviso ? h`<p class="nota gris">${H.aviso}</p>` : ''}
@@ -5417,6 +5956,27 @@ const Cerca = (() => {
 
     // Cargar una promo de la zona: en qué comercio, qué descuento, qué días y con qué medio de pago.
     arranque: vistaArranque,
+    cartel(H) {
+      return marco('Cartel para el barrio', h`<div class="hoja-cuerpo cartel">
+        ${H.url ? h`<img class="cartel-img" src="${H.url}" alt="El cartel: ¿Dónde está más barato hoy? Con un código QR que abre la Libreta del hogar">` : cargando('Armando el cartel…')}
+        <p class="tenue chico">Imprimilo en una hoja A4 y pegalo en el almacén, el edificio, el club o la escuela. El código QR abre la libreta: es gratis y sin publicidad.</p>
+        <div class="hoja-pie"><button type="button" class="btn" data-act="cartel-bajar"${atr('disabled', !H.url)}>Descargar para imprimir</button>
+          <button type="button" class="btn btn-principal" data-act="cartel-compartir"${atr('disabled', !H.url)}>${ico('compartir')}Compartir</button></div></div>`);
+    },
+    entrada(H) {
+      const hoy = hoyDia();
+      return marco(`Estás en ${H.nombre}`, h`<div class="hoja-cuerpo entrada">
+        ${H.promos.length ? h`<ul class="entrada-promos">${H.promos.map((p, i) => h`<li class="oh-tarjeta t${i % 4}">
+            ${img3d(/dni|modo|mercado pago|app|qr/i.test(p.medio) ? 'mobile-phone' : 'credit-card', 'oh-img', 52)}
+            <p class="oh-pct">${p.pct}<span>%</span></p><p class="oh-medio">hoy con ${p.medio}</p><p class="oh-tope">${pbTope(p)}</p></li>`)}</ul>` : ''}
+        ${H.zona.length ? h`<p class="rotulo">Promos que cargaron los vecinos</p><ul class="ofertas">${H.zona.map(filaPromo)}</ul>` : ''}
+        ${H.precios.length ? h`<div class="entrada-precios"><p><strong>${H.precios.length} ${N.plural(H.precios.length, 'precio', 'precios')} de otros hogares en este comercio.</strong> ¿Siguen así? Confirmalos con un toque y vuelven a valer 24 horas para todo el barrio.</p>
+            <ul class="ofertas">${H.precios.slice(0, 3).map(d => h`<li><span class="oferta-nombre">${d.t}</span><strong class="oferta-precio">${N.plata(d.p)}</strong><span class="oferta-detalle">${haceRato(d, hoy)}</span></li>`)}</ul>
+            <div class="acciones"><button type="button" class="btn btn-principal" data-act="confirmar" data-k="${H.t.id}" data-escribe>Confirmar precios</button></div></div>` : ''}
+        ${E.puerta ? '' : h`<div class="acciones"><button type="button" class="btn" data-act="avisar-precio" data-escribe>${ico('mas')}Avisar un precio acá</button></div>`}
+        <p class="tenue chico">Te aviso cuando entrás a un comercio, mientras la app está abierta. Tu ubicación no sale del teléfono. <button type="button" class="enlace" data-act="entrada-apagar">No avisarme más</button></p>
+        <div class="hoja-pie"><button type="button" class="btn btn-principal" data-act="cerrar">Listo</button></div></div>`);
+    },
     fuentes(H) {
       return marco('De dónde salen', h`<div class="hoja-cuerpo">
         <p>Las promos de bancos y billeteras las publica cada banco y se cargan en la libreta una vez por mes${H.actualizado ? ` (última vez: ${N.fechaCorta(H.actualizado)})` : ''}. Pueden cambiar o agotarse: confirmalas siempre en la app de tu banco antes de pagar.</p>
@@ -5427,12 +5987,12 @@ const Cerca = (() => {
     confirmar(H) {
       const hoy = hoyDia();
       return marco(`¿Siguen estos precios?`, h`<div class="hoja-cuerpo">
-        <p class="tenue chico">Precios que cargaron otros hogares en <strong>${H.nombre}</strong>. Si estás ahí, confirmá con un toque si siguen igual o cuánto salen ahora: así nadie se lleva una sorpresa.</p>
+        <p class="tenue chico">Precios que cargaron otros hogares en <strong>${H.nombre}</strong>. Cada precio se ve 24 horas: si estás ahí, confirmá con un toque si sigue igual (vuelve a valer 24 horas) o cuánto sale ahora.</p>
         ${H.estado === 'cargando' ? cargando('Buscando los precios de este comercio…') : H.estado === 'error' ? h`<p class="nota gris">No se pudieron traer los precios. Revisá la conexión.</p>`
           : !H.items.length ? h`<p class="tenue">No hay precios de otros hogares para confirmar en este comercio. ¡Avisá vos uno!</p>`
           : h`<ul class="confirmar">${H.items.map((it, i) => h`<li>
             <div class="conf-dato"><span class="oferta-nombre">${it.d.t}</span><strong class="oferta-precio">${N.plata(it.d.p)}</strong>
-              <span class="oferta-detalle">${[A.haceDias(hoy - it.d.d), A.origen({ hogar: it.d.h, cuantos: +it.d.c || 1 })].join(' · ')}</span></div>
+              <span class="oferta-detalle">${[it.d.vence ? `cargado ${haceRato(it.d, hoy)}: ya no se muestra hasta que alguien lo confirme` : haceRato(it.d, hoy), A.origen({ hogar: it.d.h, cuantos: +it.d.c || 1 })].join(' · ')}</span></div>
             ${it.estado === 'sigue' ? h`<p class="verde chico">✓ Confirmado. ¡Gracias!</p>` : it.estado === 'cambio' ? h`<p class="verde chico">✓ Precio actualizado. ¡Gracias!</p>`
               : it.abierto ? h`<div class="conf-nuevo"><input type="text" id="cf-${i}" data-k="items.${i}.nuevo" value="${it.nuevo}" inputmode="decimal" autocomplete="off" placeholder="$ ahora" aria-label="Precio de ahora">
                   <button type="button" class="btn btn-chico btn-principal" data-act="conf-guardar" data-i="${i}"${atr('disabled', it.ocupado)}>Guardar</button></div>`
@@ -5494,14 +6054,14 @@ const Cerca = (() => {
     // El mapa con los precios de la zona. Se dibuja una sola vez; después cambia solo la ficha de abajo.
     mapa(H) {
       if (H.vivo) {
-        return marco('Precios de tu zona', h`<div class="hoja-cuerpo">
+        return marco(H.invitado ? 'Promos de hoy cerca' : 'Precios de tu zona', h`<div class="hoja-cuerpo">
           <label class="buscar">${ico('buscar')}<input type="search" id="mz-filtro" value="${H.filtro}" placeholder="Filtrar: pollo, pan, yerba…" autocomplete="off" maxlength="60" aria-label="Filtrar los precios del mapa"></label>
           <p class="tenue chico en-vivo" id="mz-estado" aria-live="polite">${estadoZonaVivo(H)}</p>
           <div class="mapa" id="mapa">${cargando('Abriendo el mapa…')}</div>
           <div id="mapa-ficha" class="mapa-ficha" aria-live="polite">${fichaMapa(H)}</div>
           <ul class="lugares" id="mapa-lista">${H.pines.map((pn, i) => filaPin(H, pn, i))}</ul>
           <div class="hoja-pie"><button type="button" class="btn" data-act="cerrar">Cerrar</button>
-            <button type="button" class="btn btn-principal" data-act="avisar-precio" data-escribe>${ico('mas')}Avisar un precio</button></div></div>`);
+            ${H.invitado ? '' : h`<button type="button" class="btn btn-principal" data-act="avisar-precio" data-escribe>${ico('mas')}Avisar un precio</button>`}</div></div>`);
       }
       return marco(H.titulo || 'Precios cerca', h`<div class="hoja-cuerpo">
         ${H.bajada ? h`<p class="tenue chico">${H.bajada}</p>` : ''}
@@ -5622,7 +6182,9 @@ const Cerca = (() => {
         <input type="text" id="aj-alias" data-cambio="alias" value="${E.ajustes.alias}" maxlength="40" autocomplete="off" placeholder="Familia García, Los del 3°B…" enterkeyhint="done">
         <small>Con este nombre te ven los hogares de tu zona cuando consiguen algo más barato gracias a vos. Sin nombre, aparecés como «otro hogar».</small></label>
       <p class="tenue chico">${pos ? 'Este teléfono recuerda tu ubicación para pedir los precios de tu zona.' : 'Este teléfono no tiene guardada tu ubicación.'}
-        <button type="button" class="enlace" data-act="${pos ? 'cerca-olvidar' : 'cerca-activar'}">${pos ? 'Olvidarla' : 'Usar mi ubicación'}</button></p></div>`;
+        <button type="button" class="enlace" data-act="${pos ? 'cerca-olvidar' : 'cerca-activar'}">${pos ? 'Olvidarla' : 'Usar mi ubicación'}</button></p>
+      <label class="casilla"><input type="checkbox" id="aj-entrar" data-cambio="al-entrar"${atr('checked', quiereEntrada())}>
+        <span>Avisarme al entrar a un comercio <small class="tenue">· sus promos de hoy y los precios de vecinos para confirmar. Funciona con la app abierta y la ubicación activada; la ubicación no sale del teléfono.</small></span></label></div>`;
   }
 
   /* ---------- el mapa ---------- */
@@ -5638,7 +6200,7 @@ const Cerca = (() => {
         const pn = m.get(o.k) || { k: o.k, lat: o.lat, lon: o.lon, dist: o.dist, nombre: nombreDeRef(o.k), publico: o.comercio || '', renglones: [], baratos: 0 };
         const barato = A.conviene(o, p.precio);
         if (barato) pn.baratos++;
-        pn.renglones.push({ nombre: p.nombre, precio: o.precio, barato, detalle: [A.haceDias(hoy - o.dia), A.origen(o), A.recoTexto([o]), !o.propio && p.precio > 0 ? `vos lo pagaste ${N.plata(p.precio)}` : ''].filter(Boolean).join(' · ') });
+        pn.renglones.push({ nombre: p.nombre, precio: o.precio, barato, detalle: [haceRato(o, hoy), A.origen(o), A.recoTexto([o]), !o.propio && p.precio > 0 ? `vos lo pagaste ${N.plata(p.precio)}` : ''].filter(Boolean).join(' · ') });
         m.set(o.k, pn);
       }
     }
@@ -5662,7 +6224,7 @@ const Cerca = (() => {
       ${pn.dist != null ? h`<p class="tenue chico">A ${A.distTexto(pn.dist)} de vos</p>` : ''}
       <ul class="ofertas">${pn.renglones.map(r => h`<li${atr('class="es-promo"', !!r.promo)}><span class="oferta-nombre">${r.nombre}</span><strong class="oferta-precio${r.barato || r.promo ? ' verde' : ''}">${r.promo ? `−${r.pct} %` : N.plata(r.precio)}</strong><span class="oferta-detalle">${r.detalle}</span></li>`)}</ul>
       <div class="acciones"><a class="btn btn-chico" href="${C.enlace(pn.k, pn.lat, pn.lon)}" target="_blank" rel="noopener">${ico('lugar')}Cómo llegar</a>
-        ${/^(osm|com):/.test(pn.k) ? h`<button type="button" class="btn btn-chico" data-act="confirmar" data-k="${pn.k}" data-escribe>¿Estás acá? Confirmá</button>` : ''}</div></div>`;
+        ${/^(osm|com):/.test(pn.k) && !H.invitado ? h`<button type="button" class="btn btn-chico" data-act="confirmar" data-k="${pn.k}" data-escribe>¿Estás acá? Confirmá</button>` : ''}</div></div>`;
   }
   const filaPin = (H, pn, i) => h`<li><button type="button" class="lugar" data-act="mapa-pin" data-k="${pn.k}"${atr('aria-current="true"', pn.k === H.pin)}>
     <span class="lugar-nombre">${pn.nombre || pn.publico || (esObjeto(H.detalles[pn.k]) && H.detalles[pn.k].nombre) || `Comercio ${i + 1}`}</span><span class="lugar-dist">${pn.texto}</span>
@@ -5711,6 +6273,7 @@ const Cerca = (() => {
      avisa un precio, su cartel aparece (resaltado) sin recargar. Se puede filtrar escribiendo. */
   const pinMapa = x => ({ k: x.k, lat: x.lat, lon: x.lon, texto: x.texto, tono: x.tono });
   function estadoZonaVivo(H) {
+    if (H.invitado) { const pr = H.pines.filter(pn => pn.promos).length; return pr ? `${pr} ${N.plural(pr, 'súper', 'súpers')} con promo hoy cerca tuyo` : 'Buscando los súpers con promo hoy…'; }
     if (H.estado === 'error') return h`<span class="rojo">${H.error || 'No se pudo conectar con los precios de la zona.'}</span>`;
     if (H.estado !== 'vivo') return 'Conectando…';
     const n = H.pines.reduce((s, pn) => s + (pn.precios || 0), 0), pr = H.pines.filter(pn => pn.promos).length;
@@ -5721,12 +6284,12 @@ const Cerca = (() => {
   function pinesZona(H) {
     const hoy = hoyDia(), q = N.raices(H.filtro || ''), m = new Map();
     for (const d of H.docs) {
-      if (!(d.v >= hoy) || !(d.d <= hoy + 1) || !(d.p > 0) || typeof d.t !== 'string' || !A.puntoValido(d.la, d.lo)) continue;
+      if (!C.vigente(d) || typeof d.t !== 'string' || !A.puntoValido(d.la, d.lo)) continue;
       if (q.length && !N.coincide(q, d.t) && !(d.g && N.CATS[d.g] && N.coincide(q, N.CATS[d.g]))) continue;
       const dist = A.distancia(H.pos.lat, H.pos.lon, d.la, d.lo);
       if (dist > C.RADIO_ZONA) continue;
       const pn = m.get(d.k) || { k: d.k, lat: d.la, lon: d.lo, dist, nombre: nombreDeRef(d.k), publico: typeof d.n === 'string' ? d.n : '', renglones: [], baratos: 0 };
-      pn.renglones.push({ nombre: d.t, precio: +d.p, barato: false, dia: +d.d, detalle: [A.haceDias(hoy - d.d), A.origen({ hogar: typeof d.h === 'string' ? d.h : '', cuantos: +d.c || 1 })].join(' · ') });
+      pn.renglones.push({ nombre: d.t, precio: +d.p, barato: false, dia: +d.d + (C.momento(d) || 0) / 1e13, detalle: [haceRato(d, hoy), A.origen({ hogar: typeof d.h === 'string' ? d.h : '', cuantos: +d.c || 1 })].join(' · ') });
       m.set(d.k, pn);
     }
     // las sucursales con promo de banco hoy (si lo buscado no la deja afuera)
@@ -5756,7 +6319,7 @@ const Cerca = (() => {
   }
   function alLlegarZona(H, docs) {
     if (mapaActual() !== H) return;
-    const firma = d => `${d.id}|${d.p}|${d.d}`, nuevos = [];
+    const firma = d => `${d.id}|${d.p}`, nuevos = [];         // una confirmación («sigue igual») no es un precio nuevo
     if (H.vistos) for (const d of docs) if (!H.vistos.has(firma(d)) && typeof d.t === 'string' && d.p > 0) nuevos.push(d);
     H.vistos = new Set(docs.map(firma));
     for (const d of nuevos) H.nuevos.add(d.k);
@@ -5768,13 +6331,15 @@ const Cerca = (() => {
     }
   }
   async function abrirMapaZona(op) {
-    if (!puedeCerca() || !Datos.precios || !Datos.precios.escuchar) return;
+    // sin cuenta (mirando las ofertas): el mapa con las sucursales que tienen promo hoy, sin los precios de los vecinos
+    const invitado = !puedeCerca() || !Datos.precios || !Datos.precios.escuchar;
+    if (invitado && !conMapa()) return;
     let pos = C.ultimaPosicion();
     if (!pos) { try { pos = await C.posicion(true); } catch (e) { avisar((e && e.texto) || 'Para ver el mapa de la zona hace falta tu ubicación.'); return; } }
-    const H = { tipo: 'mapa', vivo: true, pos, pines: [], pin: null, detalles: {}, mapa: null, filtro: '', docs: [], vistos: null, nuevos: new Set(), estado: 'conectando', error: '', tiendas: [], foco: op && op.foco };
+    const H = { tipo: 'mapa', vivo: true, invitado, pos, pines: [], pin: null, detalles: {}, mapa: null, filtro: '', docs: [], vistos: null, nuevos: new Set(), estado: invitado ? 'vivo' : 'conectando', error: '', tiendas: [], foco: op && op.foco };
     abrirHoja(H);
     tiendasConPromo(pos).then(l => { H.tiendas = l; if (mapaActual() === H) { actualizarZonaVivo(H); if (H.foco && H.pines.some(x => x.k === H.foco)) elegirPin(H, H.foco, true); } });
-    try {
+    if (!invitado) try {
       H.alSoltar = Datos.precios.escuchar(A.celdasCerca(pos.lat, pos.lon, C.RADIO_ZONA), docs => alLlegarZona(H, docs),
         e => { H.estado = 'error'; H.error = /permission/i.test(String(e && (e.code || e.message))) ? 'Firebase no deja leer los precios de la zona: falta publicar las reglas nuevas.' : 'Se cortó la conexión con los precios de la zona. Cerrá el mapa y abrilo de nuevo.'; if (mapaActual() === H) pintarFichaMapa(H); });
     } catch (e) { H.estado = 'error'; }
@@ -6082,7 +6647,7 @@ const Cerca = (() => {
     return {
       nombre: d.nombre || '', marca: d.marca || '', presentacion: d.presentacion || '', categoria: d.categoria || 'almacen', codigo: d.codigo || '',
       stock: String(d.stock == null ? 1 : d.stock), aviso: String(d.aviso || 0), reponer: d.reponer !== false, precio: d.precio > 0 ? N.campoPlata(d.precio) : '',
-      comercio: ult ? ult[2] : nuevo ? ultimoComercio() : '', marcaFija: !!d.marcaFija,
+      comercio: ult ? ult[2] : nuevo ? ultimoComercio() : '', marcaFija: !!d.marcaFija, foto: fotoValida(d.foto) ? d.foto : '',
       diario: N.esDiario({ categoria: d.categoria || 'almacen', diario: d.diario }), diarioTocado: d.diario === true || d.diario === false,
     };
   }
@@ -6391,11 +6956,12 @@ const Cerca = (() => {
       if (ref && E.ajustes.compartir === true && puedeCerca()) { try { n = await aportarZona([{ codigo: clave, precio, reco: 0, texto, cat: H.cat }], ref, hoyDia(), E.ajustes.alias, lugarDe(ref)); } catch (e) { n = 0; } }
       if (E.hoja !== H) return;
       if (comercio) recordarComercio(comercio);
+      if (n) celebrar();
       const k = cuentaCombo(H);
       const cuenta = k && !k.faltan.length && k.suma > 0 ? (k.suma > precio ? ` Por separado saldría ${N.plata(k.suma)}: te ahorraste ${N.plata(k.suma - precio)}.` : k.suma < precio ? ` Por separado saldría ${N.plata(k.suma)}.` : '') : '';
       cambiarHoja({ estado: 'hecho', ocupado: false, error: '', fallo: false, sinCodigo: false, cerca: null,
         texto: (llevo ? `Se ${N.plural(sumadas.length, 'sumó', 'sumaron')} a la alacena: ${sumadas.map(c => `${cantTexto(c.q, c.u)} de ${c.n.toLowerCase()}`).join(' y ')}.` : `Combo anotado: ${N.plata(precio)}${comercio ? ` en ${comercio}` : ''}.`)
-          + (n ? ' Ya lo ven los hogares de tu zona.' : !ref ? ' Para que lo vean otros hogares, ubicá el comercio en el mapa.' : '') + cuenta });
+          + (n ? ' Ya lo ven los hogares de tu zona (durante 24 horas).' : !ref ? ' Para que lo vean otros hogares, ubicá el comercio en el mapa.' : '') + cuenta });
       return;
     }
     let id = H.id && E.prod.has(H.id) && codigoDe({ ...E.prod.get(H.id), suelto: true }) === clave ? H.id : productoSuelto(clave);
@@ -6422,8 +6988,9 @@ const Cerca = (() => {
     let n = 0;
     if (ref && E.ajustes.compartir === true && puedeCerca()) { try { n = await aportarZona([{ codigo: clave, precio, reco: 0, texto, cat: H.cat }], ref, hoyDia(), E.ajustes.alias, lugarDe(ref)); } catch (e) { n = 0; } }
     if (E.hoja !== H) return;
+    if (n) celebrar();
     cambiarHoja({ estado: 'hecho', ocupado: false, error: '', fallo: false, sinCodigo: false, cerca: null,
-      texto: n ? `Precio anotado: ${nombre}, ${N.plata(precio)}${kilo ? ' el kilo' : ''} en ${comercio}. Ya lo ven los hogares de tu zona. ¡Gracias!`
+      texto: n ? `Precio anotado: ${nombre}, ${N.plata(precio)}${kilo ? ' el kilo' : ''} en ${comercio}. Ya lo ven los hogares de tu zona durante 24 horas. ¡Gracias!`
         : !ref ? 'Para que ese precio les sirva a otros hogares, ubicá el comercio en el mapa (el botón del pin).'
           : E.ajustes.compartir !== true ? 'Tu hogar no comparte precios con la zona: se cambia en Ajustes. Como no está en tu alacena, el precio no se guardó.'
             : 'No se pudo anotar el precio. Probá de nuevo.' });
@@ -6471,8 +7038,9 @@ const Cerca = (() => {
     if (ref && E.ajustes.compartir === true && puedeCerca()) { try { n = await aportarZona([{ codigo: H.codigo, precio, reco: 0, texto: H.info ? [H.info.nombre, H.info.marca, H.info.presentacion].filter(Boolean).join(' ').slice(0, 60) : '', cat: H.info ? H.info.categoria : '' }], ref, hoyDia(), E.ajustes.alias, lugarDe(ref)); } catch (e) { n = 0; } }
     if (E.hoja !== H) return;
     if (comercio) recordarComercio(comercio);
+    if (n) celebrar();
     cambiarHoja({ estado: 'hecho', ocupado: false, error: '', fallo: false, sinCodigo: false, cerca: null,
-      texto: n ? `Precio anotado: ${N.plata(precio)} en ${comercio}. Ya lo ven los hogares de tu zona. ¡Gracias!`
+      texto: n ? `Precio anotado: ${N.plata(precio)} en ${comercio}. Ya lo ven los hogares de tu zona durante 24 horas. ¡Gracias!`
         : !ref ? 'Para que ese precio les sirva a otros hogares, ubicá el comercio en el mapa (el botón del pin).'
           : E.ajustes.compartir !== true ? 'Tu hogar no comparte precios con la zona: se cambia en Ajustes. Como el producto no está en tu alacena, el precio no se guardó.'
             : 'No se pudo anotar el precio. Probá de nuevo.' });
@@ -6835,7 +7403,7 @@ const Cerca = (() => {
     }
     ocupar(true);
     try {
-      const idNuevo = await crearProducto({ ...datos, stock, precio, comercio, ref: refDeComercio(comercio) });
+      const idNuevo = await crearProducto({ ...datos, stock, precio, comercio, ref: refDeComercio(comercio), foto: f.foto });
       if (precio > 0) recordarComercio(comercio);
       const despues = precio > 0 ? trasCompra([{ id: idNuevo, precio, cant: Math.max(1, stock) }], comercio) : Promise.resolve(null);
       if (E.hoja !== H) { trasGuardarPropio(); pintar(); return; }
@@ -7138,12 +7706,57 @@ const Cerca = (() => {
     },
     'gondola-llevo'() { guardarGondola(true); },
     'mapa-vivo'() { abrirMapaZona(); },
+    'acceso-cat'(el) {
+      const q = $('#bc-q'), t = N.CATS[el.dataset.cat];
+      if (!q || !t) return;
+      q.value = t; E.buscaEscrito = null;
+      buscarCerca();
+    },
     'oferta-mapa'(el) { abrirMapaZona({ foco: el.dataset.k }); },
+    async 'buscar-foto'(el) {
+      const id = el.dataset.id, p = verProd(id);
+      if (!p || !puede() || !/^\d{8,14}$/.test(p.codigo || '') || !Lector.porCodigo || el.disabled) return;
+      el.disabled = true; el.lastChild.textContent = 'Buscando la foto…';
+      let r = null;
+      try { r = await Lector.porCodigo(p.codigo); } catch (e) { r = null; }
+      if (!r || !fotoValida(r.foto)) { avisar('Este producto no tiene foto en la base pública de productos.'); if (E.hoja) renderHoja(); return; }
+      E.prod.set(id, Object.assign({}, E.prod.get(id), { foto: r.foto }));
+      enCola(id, () => escribir(() => E.db.doc('productos/' + id).update({ foto: r.foto }))).catch(falloGuardar);
+      if (E.hoja) renderHoja();
+      pintar();
+    },
+    async 'compartir-estrella'(el) {
+      const x = E.estrella;
+      if (!x || el.dataset.ocupado) return;
+      el.dataset.ocupado = '1';
+      const img = await tarjetaEstrella(x);
+      delete el.dataset.ocupado;
+      compartirTexto(`${x.tipo === 'ultimo' ? '📣' : '⭐'} ${x.nombre} a ${N.plata(x.precio)} en ${x.comercio}${x.pct ? ` (${x.pct} % menos)` : ''}. Lo vi en la Libreta del hogar, donde los vecinos avisan los precios del barrio. Gratis: ${URL_APP()}`, img);
+    },
+    async 'compartir-oferta'(el) {
+      const dow = new Date().getDay(), p = pbVigentes().find(x => x.id === el.dataset.id);
+      if (!p || el.dataset.ocupado) return;
+      el.dataset.ocupado = '1';
+      const img = await tarjetaOferta(p, +el.dataset.i || 0, dow);
+      delete el.dataset.ocupado;
+      compartirTexto(`🔥 Hoy ${DIAS_SEMANA[dow]}: ${p.pct} % en ${p.cadena} con ${p.medio}${p.tope > 0 ? ` (${pbTope(p)})` : ''}. Mirá las ofertas de hoy cerca tuyo en la Libreta del hogar, gratis: ${URL_APP()}`, img);
+    },
+    'entrada-apagar'() {
+      guardarLocal('libreta.alEntrar', false); pararVigilancia();
+      if (E.hoja && E.hoja.tipo === 'entrada') cerrarHoja();
+      avisar('Listo: no te aviso más al entrar a un comercio. Se vuelve a activar en Ajustes.');
+    },
     'ofertas-fuentes'() {
       const l = pbVigentes(C.ultimaPosicion()), f = [...new Set(l.map(p => p.fuente).filter(Boolean))];
       abrirHoja({ tipo: 'fuentes', fuentes: f, actualizado: (E.pb && E.pb.actualizado) || '' });
     },
-    arranque() { if (puede()) abrirHoja({ tipo: 'arranque', sel: {}, ocupado: false, error: '' }); },
+    arranque() {
+      if (!puede()) return;
+      // lo básico que se cargó solo aparece tildado: se destilda lo que no hay
+      const sel = {};
+      for (const [, p] of V.prods) if (p.base && BASICOS.some(([, l]) => l.includes(p.nombre))) sel[p.nombre] = +p.stock > 0 ? 1 : 2;
+      abrirHoja({ tipo: 'arranque', sel, base: Object.keys(sel).length > 0, ocupado: false, error: '' });
+    },
     'arranque-toque'(el) {
       const H = E.hoja;
       if (!H || H.tipo !== 'arranque' || H.ocupado) return;
@@ -7151,6 +7764,7 @@ const Cerca = (() => {
       renderHoja();
     },
     'arranque-listo'() { guardarArranque(); },
+    'inicial-listo'() { if (puede()) { cambiarAjustes({ semilla: 2 }).catch(() => {}); pintar(); } },
     confirmar(el) { abrirConfirmar(el.dataset.k); },
     'conf-sigue'(el) { confirmarPrecio(+el.dataset.i, false); },
     'conf-cambio'(el) { const H = E.hoja; if (H && H.tipo === 'confirmar') { H.items[+el.dataset.i].abierto = true; renderHoja(); const n = $('#cf-' + el.dataset.i); if (n) n.focus(); } },
@@ -7173,6 +7787,25 @@ const Cerca = (() => {
       if (!(m > 0)) return;
       const img = await tarjetaAhorro(m, cuando);
       compartirTexto(`${cuando === 'semana' ? 'Esta semana' : 'Este mes'} ahorré ${N.plata(m)} con la Libreta del hogar 🛒, comprando donde otros hogares del barrio encontraron mejor precio. Es gratis, sumate: ${URL_APP()}`, img);
+    },
+    async cartel() {
+      const H = { tipo: 'cartel', url: '', archivo: null };
+      abrirHoja(H);
+      const f = await cartelBarrio();
+      if (E.hoja !== H) return;
+      if (!f) { cerrarHoja(); avisar('No se pudo armar el cartel en este teléfono.'); return; }
+      H.archivo = f; H.url = URL.createObjectURL(f);
+      renderHoja();
+    },
+    'cartel-bajar'() {
+      const H = E.hoja;
+      if (!H || H.tipo !== 'cartel' || !H.url) return;
+      const a = document.createElement('a'); a.href = H.url; a.download = H.archivo.name; document.body.appendChild(a); a.click(); a.remove();
+    },
+    'cartel-compartir'() {
+      const H = E.hoja;
+      if (!H || H.tipo !== 'cartel' || !H.archivo) return;
+      compartirTexto(`¿Dónde está más barato hoy? En la Libreta del hogar los vecinos avisan los precios del barrio y ves las promos de hoy con tu banco. Gratis: ${URL_APP()}`, H.archivo);
     },
     'invitar-barrio'() {
       const B = E.barrio || {};
@@ -7343,9 +7976,32 @@ const Cerca = (() => {
       guardarLocal('libreta.tutorial', true);
       if (E.puerta) { Object.assign(E.puerta, { modo: 'inicio', paso: 0 }); render(); } else cerrarHoja();
     },
+    'bienv-sigue'() { const P = E.puerta; if (!P || P.modo !== 'bienvenida') return; P.paso = Math.min(BIENVENIDA.length - 1, P.paso + 1); render(); },
+    'bienv-saltar'() { const P = E.puerta; if (!P) return; P.paso = BIENVENIDA.length - 1; render(); },
+    'bienv-empezar'() { guardarLocal('libreta.tutorial', true); if (E.puerta) { Object.assign(E.puerta, { modo: 'inicio', paso: 0, error: '' }); render(); } },
+    invitado() {
+      guardarLocal('libreta.tutorial', true); guardarLocal('libreta.invitado', true);      // la próxima vez arranca acá
+      if (!E.puerta) return;
+      Object.assign(E.puerta, { modo: 'invitado', paso: 0, error: '' });
+      cargarPB();
+      render();
+      window.scrollTo(0, 0);
+    },
+    async 'invitado-ubicacion'() {
+      const P = E.puerta;
+      if (!P || P.ubicando) return;
+      Object.assign(P, { ubicando: true, error: '' }); render();
+      let pos = null;
+      try { pos = await C.posicion(true); } catch (e) { P.error = (e && e.texto) || 'No se pudo saber dónde estás.'; }
+      P.ubicando = false;
+      if (pos) { E.pbTiendas = null; await tiendasConPromo(pos).catch(() => []); vigilarEntrada(); }
+      if (E.puerta === P) render();
+    },
     'puerta-google'() {
       const P = E.puerta;
       if (!P || P.ocupado) return;
+      if (P.modo === 'invitado' || P.modo === 'bienvenida') { guardarLocal('libreta.tutorial', true); P.modo = 'inicio'; }
+      guardarLocal('libreta.invitado', false);
       const pedido = Datos.hogar.entrarConGoogle();            // sin esperar nada antes: la ventana de Google se abre dentro del toque
       Object.assign(P, { ocupado: true, error: '', errorBuscar: '', aviso: '' });
       render();
@@ -7526,11 +8182,13 @@ const Cerca = (() => {
       }
       if (enAjustes()) renderHoja();
       actualizarCerca();
+      vigilarEntrada();
     },
     'cerca-actualizar'() { actualizarCerca(); },
     'cerca-olvidar'() {
       const H = E.hoja;
       C.olvidarPosicion();
+      pararVigilancia();
       E.cerca = { estado: 'sin', pos: null, porId: new Map(), firma: '', t: 0, nota: '' };
       if (H && H.tipo === 'ajustes' && !H.sub) renderHoja();
       avisar('Ubicación olvidada en este teléfono');
@@ -7668,6 +8326,12 @@ const Cerca = (() => {
       Datos.avisos.preferencias({ [el.dataset.tipo]: el.checked }).catch(falloGuardar);
       return;
     }
+    if (el.dataset && el.dataset.cambio === 'al-entrar') {      // avisar al entrar a un comercio: vale para este teléfono
+      guardarLocal('libreta.alEntrar', el.checked);
+      if (el.checked) vigilarEntrada(); else pararVigilancia();
+      avisar(el.checked ? (C.ultimaPosicion() ? 'Te aviso al entrar a un comercio, con la app abierta' : 'Listo. Para que funcione, activá tu ubicación en Ofertas') : 'No te aviso más al entrar a un comercio');
+      return;
+    }
     if (el.dataset && el.dataset.cambio === 'ia') {      // usar o no la IA: vale para este teléfono
       try { if (el.checked) localStorage.removeItem(CLAVE_IA); else localStorage.setItem(CLAVE_IA, 'no'); } catch (x) { /* sin almacenamiento */ }
       pintar();
@@ -7789,8 +8453,11 @@ const Cerca = (() => {
     ACC.ajustes();
     alVerHogar();
   }
+  // una foto de producto que no carga (sin conexión, o la borraron de la base): queda el dibujo
+  document.addEventListener('error', e => { const t = e.target; if (t && t.classList && t.classList.contains('foto-prod')) t.remove(); }, true);
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) { pintar(); return; }
+    if (!document.hidden) { pintar(); vigilarEntrada(); return; }
+    pararVigilancia();
     const H = E.hoja;   // con la página oculta la cámara no queda abierta
     if (H && H.tipo === 'escanear' && H.estado === 'camara') sinVideo(H, H.codigoPara ? 'Se cerró la cámara antes de leer el código.' : '');
   });
@@ -7802,7 +8469,12 @@ const Cerca = (() => {
   let pideCuenta = inicial === 'cuenta';
   if (TABS.includes(inicial)) E.tab = inicial;
   render();
-  iniciar().then(() => { if (pideCuenta) { pideCuenta = false; verCuenta(); } });
+  iniciar().then(() => { if (pideCuenta) { pideCuenta = false; verCuenta(); } vigilarEntrada(); });
+  // al tocar la notificación «Estás en …» con la app abierta: se muestra lo de ese comercio
+  if (navigator.serviceWorker) navigator.serviceWorker.addEventListener('message', e => {
+    const d = e.data || {};
+    if (d.accion === 'entrada' && E.entrada && !E.puerta) { if (E.hoja && E.hoja.tipo !== 'entrada') cerrarHoja(); if (!E.hoja) abrirHoja(E.entrada); }
+  });
   let sinLeer = '';
   const alCambiarNotas = () => {      // el aviso de notas sin leer se rehace solo cuando cambia cuáles son
     pintarNotas();
