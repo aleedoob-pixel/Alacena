@@ -2399,7 +2399,7 @@ const Datos = (() => {
       sinConexion: 'No se pudo abrir la conexión con el servidor. Revisá internet y recargá la página.',
       donde: 'Los datos de este hogar se guardan en Firebase, un servicio de Google, y los ven solo sus integrantes. Cada teléfono guarda una copia para seguir andando sin conexión. Las fotos de los tickets quedan en el teléfono donde se cargaron.',
       fallo: 'No se pudo guardar. Revisá la conexión y probá de nuevo.',
-      version: 'Libreta del hogar · versión 2.8.0 (2026-10-14)',       // el número y la fecha los pone armar.js
+      version: 'Libreta del hogar · versión 2.9.0 (2026-10-17)',       // el número y la fecha los pone armar.js
     },
     /* Devuelve { db, permiso } si en este teléfono ya hay una cuenta con su hogar. Si no, { puerta, alEntrar }:
        la app muestra la entrada y `alEntrar` se cumple cuando se entra a un hogar. null: sin conexión. */
@@ -3701,7 +3701,7 @@ const Cerca = (() => {
     ['compras', 'Tu lista de compras, sola', 'Cargá lo que hay en casa escaneando el código de barras. La libreta aprende cada cuánto comprás cada cosa y arma la lista: la de la compra grande y la del día a día. Si querés más precisión, tocá − cuando se termina algo; no hace falta.'],
     ['escanear', '¿Está a buen precio?', 'En el súper, tocá «Comparar precio» en Compras y escaneá el producto: ves al instante cuánto lo pagaste la última vez y si cerca está más barato. Con un toque anotás el precio, lo lleves o no.'],
     ['familia', 'Toda la familia en el mismo hogar', 'Cada persona entra con su cuenta de Google y se suma con un código. Lo que anota uno lo ven todos al instante. Antes de salir, «Aviso que voy» le pregunta a la familia si falta algo.'],
-    ['gastos', 'Cuánto gastás y cuánto ahorrás', 'Cada compra queda anotada en Gastos: cuánto se va por mes, en qué y cuánto subió cada cosa. Y en Novedades, cuánto ahorraste gracias a otros hogares.'],
+    ['gastos', 'Cuánto gastás y cuánto ahorrás', 'Cada compra queda anotada en Gastos: cuánto se va por mes, en qué y cuánto subió cada cosa. Y en Ofertas, cuánto ahorraste gracias a otros hogares.'],
   ];
   // Con el mapa encendido hay un paso más: la comunidad de hogares de la zona.
   const PASO_ZONA = ['mapa', 'Una comunidad de hogares', 'Avisá un precio de lo que sea y aparece al instante en el mapa del barrio; confirmá con un toque los que cargaron otros. La libreta te avisa si otro hogar consiguió más barato lo que comprás, y dónde. También ves los precios oficiales de los supermercados y las promos del día con tu banco o billetera. Compartir es optativo: va con el nombre que elijas para tu hogar, nunca con el tuyo.'];
@@ -4604,6 +4604,89 @@ const Cerca = (() => {
     return h`<a class="nota promo-hoy" href="#novedades" data-tab="novedades"><strong>Hoy conviene:</strong> ${x.n} · ${x.t}${l.length > 1 ? ` · y ${l.length - 1} ${N.plural(l.length - 1, 'promo más', 'promos más')}` : ''}</a>`;
   }
 
+  /* ---------- promos de bancos y billeteras (promos-bancos.json) ----------
+     Las carga a mano quien mantiene la libreta, una vez por mes, con su fuente y su vigencia. Se muestran como
+     «Ofertas de hoy» y, en el mapa, con un cartel en cada sucursal de esas cadenas cerca de la persona. */
+  let pbCargando = null;
+  function cargarPB() {
+    if (!pbCargando) {
+      pbCargando = fetch('promos-bancos.json', { cache: 'no-cache' }).then(r => (r.ok ? r.json() : null)).then(j => {
+        E.pb = j && Array.isArray(j.promos) ? j : { promos: [] };
+        // solo si hay algo para mostrar (y sin pisar lo que alguien está escribiendo)
+        const ae = document.activeElement;
+        if (pbVigentes().length && !(ae && /^(INPUT|TEXTAREA)$/.test(ae.tagName) && !E.hoja)) pintar();
+        return E.pb;
+      }, () => { E.pb = { promos: [] }; return E.pb; });
+    }
+    return pbCargando;
+  }
+  // Cuenta DNI vale en comercios de la provincia de Buenos Aires (no en la Ciudad).
+  const enPBA = (lat, lon) => lat >= -41.2 && lat <= -33.2 && lon >= -63.5 && lon <= -56.5 && !(lat > -34.71 && lat < -34.52 && lon > -58.54 && lon < -58.33);
+  function pbVigentes(pos) {
+    const hoy = N.hoyISO();
+    return ((E.pb && E.pb.promos) || []).filter(p => p && p.pct > 0 && p.cadena && (!p.desde || p.desde <= hoy) && (!p.hasta || p.hasta >= hoy)
+      && (p.zona !== 'pba' || !pos || enPBA(pos.lat, pos.lon)));
+  }
+  const pbDia = (p, dow) => !p.dias || !p.dias.length || p.dias.includes(dow);
+  const planoCad = s => N.norm(s).replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+  // Las promos que valen en un comercio por su nombre («Supermercado Día», «Changomás Bahía Blanca»…).
+  function pbDeComercio(nombre, lat, lon, dow) {
+    const n = planoCad(nombre);
+    if (!n) return [];
+    return pbVigentes().filter(p => (dow == null || pbDia(p, dow)) && (p.zona !== 'pba' || enPBA(lat, lon))
+      && (p.cadenas || []).some(c => n === c || n.startsWith(c + ' ') || ['supermercado ', 'super ', 'hipermercado ', 'autoservicio '].some(x => n.startsWith(x + c))));
+  }
+  const pbTope = p => [p.tope > 0 ? `tope ${N.plata(p.tope)}${/semana/.test(p.detalle || '') ? ' por semana' : ''}` : 'sin tope', p.minimo > 0 ? `mínimo ${N.plata(p.minimo)}` : ''].filter(Boolean).join(' · ');
+  // Las sucursales cerca (hasta 8 km) de las cadenas con promo vigente: se buscan una vez por lugar.
+  async function tiendasConPromo(pos) {
+    if (!pos || !puedeCerca()) return [];
+    await cargarPB();
+    const k = A.celda(pos.lat, pos.lon);
+    if (E.pbTiendas && E.pbTiendas.k === k) return E.pbTiendas.l;
+    if (!pbVigentes(pos).some(p => p.cadenas && p.cadenas.length)) { E.pbTiendas = { k, l: [] }; return []; }
+    let l = [];
+    E.pbTiendas = { k, l: [] };       // mientras busca (y si falla), para no volver a pedirlo en cada dibujo
+    try { l = await C.cercanos(pos); } catch (e) { return []; }
+    const out = l.filter(t => t.dist <= 8000 && pbDeComercio(t.nombre, t.lat, t.lon).length);
+    E.pbTiendas = { k, l: out };
+    return out;
+  }
+  // Las ofertas de un día: [{ p, tienda (la más cercana, si hay) }], las de mayor descuento primero.
+  function ofertasDelDia(dow) {
+    const pos = C.ultimaPosicion(), tiendas = (E.pbTiendas && E.pbTiendas.l) || [];
+    return pbVigentes(pos).filter(p => pbDia(p, dow)).map(p => ({ p, tienda: tiendas.filter(t => pbDeComercio(t.nombre, t.lat, t.lon, dow).includes(p)).sort((a, b) => a.dist - b.dist)[0] || null }))
+      .sort((a, b) => (b.tienda ? 1 : 0) - (a.tienda ? 1 : 0) || b.p.pct - a.p.pct);
+  }
+  function bloqueOfertasHoy() {
+    if (!E.pb) { cargarPB(); return ''; }
+    const pos = C.ultimaPosicion();
+    if (pos && (!E.pbTiendas || E.pbTiendas.k !== A.celda(pos.lat, pos.lon))) tiendasConPromo(pos).then(l => { if (l.length && E.tab === 'novedades') pintar(); });
+    const dow = new Date().getDay(), hoy = ofertasDelDia(dow);
+    if (!pbVigentes(pos).length) return '';
+    const manana = ofertasDelDia((dow + 1) % 7);
+    return h`<section class="ofertas-hoy" aria-labelledby="oh-t">
+      <div class="oh-cabeza"><p class="oh-dia">Hoy, ${DIAS_SEMANA[dow]}</p><h2 id="oh-t">${hoy.length ? `${hoy.length} ${N.plural(hoy.length, 'oferta', 'ofertas')} para hoy` : 'Hoy no hay promos de bancos'}</h2></div>
+      ${hoy.length ? h`<ul class="oh-tarjetas">${hoy.map((x, i) => h`<li class="oh-tarjeta t${i % 4}">
+          <p class="oh-pct">${x.p.pct}<span>%</span></p>
+          <p class="oh-cadena">${x.p.cadena}</p>
+          <p class="oh-medio">con ${x.p.medio}</p>
+          <p class="oh-tope">${pbTope(x.p)}</p>
+          ${x.tienda ? h`<button type="button" class="oh-donde" data-act="oferta-mapa" data-k="${x.tienda.id}">${ico('lugar')}a ${A.distTexto(x.tienda.dist)} · ver</button>` : h`<p class="oh-tope">${x.p.detalle || ''}</p>`}
+        </li>`)}</ul>` : ''}
+      ${manana.length ? h`<p class="oh-manana"><strong>Mañana:</strong> ${manana.slice(0, 4).map(x => `${x.p.pct} % ${x.p.cadena}`).join(' · ')}${manana.length > 4 ? '…' : ''}</p>` : ''}
+      ${!pos ? h`<p class="oh-nota">Activá tu ubicación (más abajo) y te muestro cuál te queda más cerca.</p>` : ''}
+      <p class="oh-nota">Promos de bancos y billeteras de ${N.nombreMes ? N.nombreMes((E.pb.actualizado || N.hoyISO()).slice(0, 7)) : 'este mes'}. Confirmá condiciones y tope en la app de tu banco. <button type="button" class="enlace" data-act="ofertas-fuentes">Fuentes</button></p>
+    </section>`;
+  }
+  // El cartel corto de arriba de la alacena y de la lista de compras.
+  function avisoOfertaHoy() {
+    if (!E.pb) { cargarPB(); return ''; }
+    const l = ofertasDelDia(new Date().getDay()).filter(x => x.tienda || !(x.p.cadenas || []).length || !C.ultimaPosicion());
+    if (!l.length) return '';
+    const x = l[0];
+    return h`<a class="banda-oferta" href="#novedades" data-tab="novedades"><span class="bo-pct">${x.p.pct}%</span><span><strong>Hoy en ${x.p.cadena}</strong> con ${x.p.medio}${x.tienda ? ` · a ${A.distTexto(x.tienda.dist)}` : ''}${l.length > 1 ? ` · y ${l.length - 1} ${N.plural(l.length - 1, 'oferta más', 'ofertas más')}` : ''}</span><span class="bo-ver">Ver ›</span></a>`;
+  }
+
   /* ---------- novedades ---------- */
   // Lo que hay para contar, con una clave por novedad para saber cuáles ya se vieron en este teléfono.
   function novedades() {
@@ -4627,7 +4710,7 @@ const Cerca = (() => {
     consejos.sort((a, b) => b.c.ahorro - a.c.ahorro);
     $('#no-resumen').textContent = nov.cambios.length ? `${nov.cambios.length} ${N.plural(nov.cambios.length, 'producto cambió', 'productos cambiaron')} de precio en los últimos 45 días` : '';
     if (puedeCerca()) actualizarBarrio();
-    const partes = [bloqueBuscador(), puedeCerca() ? bloqueBarrio() : '', bloqueAhorro(), bloqueCanasta(inf), bloquePromos(), bloqueCercaNovedades()];
+    const partes = [puedeCerca() ? bloqueOfertasHoy() : '', bloqueBuscador(), puedeCerca() ? bloqueBarrio() : '', bloqueAhorro(), bloqueCanasta(inf), bloquePromos(), bloqueCercaNovedades()];
     if (consejos.length) {
       partes.push(h`<div class="bloque"><h2 class="bloque-t">Para la próxima compra</h2>
         <ul class="consejos">${consejos.slice(0, 8).map(k => h`<li><strong>${k.x.p.nombre}</strong><span class="compra-consejo ${k.c.tipo}">${k.c.texto}</span></li>`)}</ul>
@@ -4660,6 +4743,8 @@ const Cerca = (() => {
     if (cocina) cocina.hidden = !hayIA() || !filas.some(f => !f.p.ejemplo && +f.p.stock > 0);
     $('#al-chips').innerHTML = val(chips.map(([v, t]) => h`<button type="button" class="chip" data-act="chip" data-chip="${v}" aria-pressed="${String(E.filtro.chip === v)}">${t}</button>`));
 
+    const bo = $('#al-oferta');
+    if (bo) bo.innerHTML = val(puedeCerca() ? avisoOfertaHoy() : '');
     const caja = $('#al-lista');
     if (!filas.length) {
       caja.innerHTML = val(h`<div class="vacio">
@@ -4754,6 +4839,8 @@ const Cerca = (() => {
     const frec = E.ajustes.frecuencia, compras = V.compras, pl = V.plan;
     const voy = $('#co-voy');
     if (voy) voy.hidden = !Datos.notas || !E.db;
+    const bo = $('#co-oferta');
+    if (bo) bo.innerHTML = val(puedeCerca() ? avisoOfertaHoy() : '');
     for (const b of $$('#co-frec button')) b.setAttribute('aria-pressed', String(+b.dataset.frec === frec));
     const enLista = new Set(compras.map(x => x.id));
     for (const id of [...E.marcados]) if (!enLista.has(id) && E.prodListo) E.marcados.delete(id);
@@ -5330,6 +5417,13 @@ const Cerca = (() => {
 
     // Cargar una promo de la zona: en qué comercio, qué descuento, qué días y con qué medio de pago.
     arranque: vistaArranque,
+    fuentes(H) {
+      return marco('De dónde salen', h`<div class="hoja-cuerpo">
+        <p>Las promos de bancos y billeteras las publica cada banco y se cargan en la libreta una vez por mes${H.actualizado ? ` (última vez: ${N.fechaCorta(H.actualizado)})` : ''}. Pueden cambiar o agotarse: confirmalas siempre en la app de tu banco antes de pagar.</p>
+        <ul class="fuentes">${H.fuentes.map(u => h`<li><a href="${u}" target="_blank" rel="noopener">${u.replace(/^https?:\/\/(www\.)?/, '').split('/')[0]}</a></li>`)}</ul>
+        <p class="tenue chico">¿Viste una promo que no está? Cargala en «Promos de tu zona»: la ven todos los hogares del barrio.</p>
+        <div class="hoja-pie"><button type="button" class="btn btn-principal" data-act="cerrar">Listo</button></div></div>`);
+    },
     confirmar(H) {
       const hoy = hoyDia();
       return marco(`¿Siguen estos precios?`, h`<div class="hoja-cuerpo">
@@ -5566,7 +5660,7 @@ const Cerca = (() => {
       ${publico && pn.nombre && N.norm(publico) !== N.norm(pn.nombre) ? h`<p class="lugar-dir">${publico}</p>` : ''}
       ${sabe && (d.direccion || d.rubro) ? h`<p class="lugar-dir">${d.direccion || d.rubro}</p>` : ''}
       ${pn.dist != null ? h`<p class="tenue chico">A ${A.distTexto(pn.dist)} de vos</p>` : ''}
-      <ul class="ofertas">${pn.renglones.map(r => h`<li><span class="oferta-nombre">${r.nombre}</span><strong class="oferta-precio${r.barato ? ' verde' : ''}">${N.plata(r.precio)}</strong><span class="oferta-detalle">${r.detalle}</span></li>`)}</ul>
+      <ul class="ofertas">${pn.renglones.map(r => h`<li${atr('class="es-promo"', !!r.promo)}><span class="oferta-nombre">${r.nombre}</span><strong class="oferta-precio${r.barato || r.promo ? ' verde' : ''}">${r.promo ? `−${r.pct} %` : N.plata(r.precio)}</strong><span class="oferta-detalle">${r.detalle}</span></li>`)}</ul>
       <div class="acciones"><a class="btn btn-chico" href="${C.enlace(pn.k, pn.lat, pn.lon)}" target="_blank" rel="noopener">${ico('lugar')}Cómo llegar</a>
         ${/^(osm|com):/.test(pn.k) ? h`<button type="button" class="btn btn-chico" data-act="confirmar" data-k="${pn.k}" data-escribe>¿Estás acá? Confirmá</button>` : ''}</div></div>`;
   }
@@ -5619,8 +5713,10 @@ const Cerca = (() => {
   function estadoZonaVivo(H) {
     if (H.estado === 'error') return h`<span class="rojo">${H.error || 'No se pudo conectar con los precios de la zona.'}</span>`;
     if (H.estado !== 'vivo') return 'Conectando…';
-    const n = H.pines.reduce((s, pn) => s + pn.renglones.length, 0);
-    return h`<span class="punto-vivo" aria-hidden="true"></span>En vivo · ${n ? `${n} ${N.plural(n, 'precio', 'precios')}${H.filtro && N.raices(H.filtro).length ? ' que coinciden' : ''} en ${H.pines.length} ${N.plural(H.pines.length, 'comercio', 'comercios')}` : H.filtro ? 'nada coincide con lo que escribiste' : 'todavía nadie cargó precios cerca: ¡avisá el primero!'}`;
+    const n = H.pines.reduce((s, pn) => s + (pn.precios || 0), 0), pr = H.pines.filter(pn => pn.promos).length;
+    const txtP = n ? `${n} ${N.plural(n, 'precio', 'precios')}${H.filtro && N.raices(H.filtro).length ? ' que coinciden' : ''} en ${H.pines.filter(pn => pn.precios).length} ${N.plural(H.pines.filter(pn => pn.precios).length, 'comercio', 'comercios')}` : '';
+    const txtR = pr ? `${pr} ${N.plural(pr, 'súper', 'súpers')} con promo hoy` : '';
+    return h`<span class="punto-vivo" aria-hidden="true"></span>En vivo · ${n || pr ? [txtP, txtR].filter(Boolean).join(' · ') : H.filtro ? 'nada coincide con lo que escribiste' : 'todavía nadie cargó precios cerca: ¡avisá el primero!'}`;
   }
   function pinesZona(H) {
     const hoy = hoyDia(), q = N.raices(H.filtro || ''), m = new Map();
@@ -5633,11 +5729,22 @@ const Cerca = (() => {
       pn.renglones.push({ nombre: d.t, precio: +d.p, barato: false, dia: +d.d, detalle: [A.haceDias(hoy - d.d), A.origen({ hogar: typeof d.h === 'string' ? d.h : '', cuantos: +d.c || 1 })].join(' · ') });
       m.set(d.k, pn);
     }
+    // las sucursales con promo de banco hoy (si lo buscado no la deja afuera)
+    const dow = new Date().getDay();
+    for (const t of H.tiendas || []) {
+      const ps = pbDeComercio(t.nombre, t.lat, t.lon, dow).filter(p => !q.length || N.coincide(q, `${p.cadena} ${p.medio} promo descuento oferta`));
+      if (!ps.length) continue;
+      const pn = m.get(t.id) || { k: t.id, lat: t.lat, lon: t.lon, dist: A.distancia(H.pos.lat, H.pos.lon, t.lat, t.lon), nombre: nombreDeRef(t.id), publico: t.nombre, renglones: [], baratos: 0 };
+      for (const p of ps) pn.renglones.push({ nombre: `${p.pct} % con ${p.medio}`, pct: p.pct, promo: true, dia: 1e9, detalle: [`hoy, ${DIAS_SEMANA[dow]}`, pbTope(p), p.detalle || ''].filter(Boolean).join(' · ') });
+      m.set(t.id, pn);
+    }
     const pines = [...m.values()];
     for (const pn of pines) {
       pn.renglones.sort((a, b) => b.dia - a.dia || a.nombre.localeCompare(b.nombre, 'es'));
-      pn.tono = H.nuevos.has(pn.k) ? 'barato' : pn.nombre ? 'mio' : '';
-      pn.texto = pn.renglones.length === 1 ? N.plata(pn.renglones[0].precio) : `${pn.renglones.length} precios`;
+      const pr = pn.renglones.filter(r => r.promo), pc = pn.renglones.length - pr.length, max = pr.length ? Math.max(...pr.map(r => r.pct)) : 0;
+      pn.promos = pr.length; pn.precios = pc;
+      pn.tono = H.nuevos.has(pn.k) ? 'barato' : max ? 'promo' : pn.nombre ? 'mio' : '';
+      pn.texto = max && !pc ? `${max}% hoy` : max ? `${max}% · ${pc} ${pc === 1 ? 'precio' : 'precios'}` : pc === 1 ? N.plata(pn.renglones[0].precio) : `${pc} precios`;
     }
     return pines.sort((a, b) => (H.nuevos.has(b.k) ? 1 : 0) - (H.nuevos.has(a.k) ? 1 : 0) || a.dist - b.dist);
   }
@@ -5660,12 +5767,13 @@ const Cerca = (() => {
       avisar(`Nuevo precio en tu zona: ${d.t}, ${N.plata(d.p)} en ${nombreDeRef(d.k) || d.n || 'un comercio'}`, { rotulo: 'Ver', fn: () => { if (mapaActual() === H) elegirPin(H, d.k, true); } });
     }
   }
-  async function abrirMapaZona() {
+  async function abrirMapaZona(op) {
     if (!puedeCerca() || !Datos.precios || !Datos.precios.escuchar) return;
     let pos = C.ultimaPosicion();
     if (!pos) { try { pos = await C.posicion(true); } catch (e) { avisar((e && e.texto) || 'Para ver el mapa de la zona hace falta tu ubicación.'); return; } }
-    const H = { tipo: 'mapa', vivo: true, pos, pines: [], pin: null, detalles: {}, mapa: null, filtro: '', docs: [], vistos: null, nuevos: new Set(), estado: 'conectando', error: '' };
+    const H = { tipo: 'mapa', vivo: true, pos, pines: [], pin: null, detalles: {}, mapa: null, filtro: '', docs: [], vistos: null, nuevos: new Set(), estado: 'conectando', error: '', tiendas: [], foco: op && op.foco };
     abrirHoja(H);
+    tiendasConPromo(pos).then(l => { H.tiendas = l; if (mapaActual() === H) { actualizarZonaVivo(H); if (H.foco && H.pines.some(x => x.k === H.foco)) elegirPin(H, H.foco, true); } });
     try {
       H.alSoltar = Datos.precios.escuchar(A.celdasCerca(pos.lat, pos.lon, C.RADIO_ZONA), docs => alLlegarZona(H, docs),
         e => { H.estado = 'error'; H.error = /permission/i.test(String(e && (e.code || e.message))) ? 'Firebase no deja leer los precios de la zona: falta publicar las reglas nuevas.' : 'Se cortó la conexión con los precios de la zona. Cerrá el mapa y abrilo de nuevo.'; if (mapaActual() === H) pintarFichaMapa(H); });
@@ -5699,7 +5807,7 @@ const Cerca = (() => {
       pines.push({ k: c.ref, lat: u.lat, lon: u.lon, dist: pos ? A.distancia(pos.lat, pos.lon, u.lat, u.lon) : null, nombre: c.comercio, publico: '', tono: 'mio', baratos: 0, texto: N.plata(c.precio),
         renglones: [{ nombre: p.nombre, precio: c.precio, barato: false, detalle: `lo pagaste ${A.haceDias(hoy - c.dia)}` }] });
     }
-    abrirMapa({ titulo: p.nombre, bajada: pos ? '' : 'Para ver también los precios de otros hogares, activá tu ubicación en Novedades.', pines, pin: pines.length ? pines[0].k : null });
+    abrirMapa({ titulo: p.nombre, bajada: pos ? '' : 'Para ver también los precios de otros hogares, activá tu ubicación en Ofertas.', pines, pin: pines.length ? pines[0].k : null });
   }
 
   /* ---------- elegir el comercio en el mapa ----------
@@ -6088,7 +6196,7 @@ const Cerca = (() => {
     return h`${d.ult ? h`<li><span>La última vez lo pagaste</span><strong>${N.plata(d.ult[1])}</strong><small>${[A.haceDias(hoy - d.ult[0]), d.ult[2] ? `en ${d.ult[2]}` : ''].filter(Boolean).join(' · ')}</small></li>` : ''}
         ${H.estadoZona === 'buscando' ? h`<li>${cargando('Mirando precios cerca…')}</li>`
           : d.mejor ? h`<li><span>Lo más barato cerca</span><strong class="verde">${N.plata(d.mejor.precio)}</strong><small>${detalleOferta(d.mejor, hoy)}</small></li>`
-            : H.estadoZona === 'sin-ubicacion' ? h`<li><span class="tenue">Para comparar con tu zona, activá tu ubicación en Novedades.</span></li>`
+            : H.estadoZona === 'sin-ubicacion' ? h`<li><span class="tenue">Para comparar con tu zona, activá tu ubicación en Ofertas.</span></li>`
               : d.hayZona ? h`<li><span class="tenue">Todavía nadie cargó este producto cerca. ¡Sé el primero!</span></li>` : ''}`;
   }
   // Un precio de algo sin código de barras: qué es (lo puede decir la IA con una foto), cuánto sale y dónde.
@@ -7030,6 +7138,11 @@ const Cerca = (() => {
     },
     'gondola-llevo'() { guardarGondola(true); },
     'mapa-vivo'() { abrirMapaZona(); },
+    'oferta-mapa'(el) { abrirMapaZona({ foco: el.dataset.k }); },
+    'ofertas-fuentes'() {
+      const l = pbVigentes(C.ultimaPosicion()), f = [...new Set(l.map(p => p.fuente).filter(Boolean))];
+      abrirHoja({ tipo: 'fuentes', fuentes: f, actualizado: (E.pb && E.pb.actualizado) || '' });
+    },
     arranque() { if (puede()) abrirHoja({ tipo: 'arranque', sel: {}, ocupado: false, error: '' }); },
     'arranque-toque'(el) {
       const H = E.hoja;

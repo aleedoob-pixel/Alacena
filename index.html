@@ -62,7 +62,7 @@
       <a href="#alacena" data-tab="alacena" aria-current="page"><span class="pestana-ico"><svg class="ico" aria-hidden="true"><use href="#i-alacena"/></svg></span>Alacena</a>
       <a href="#compras" data-tab="compras"><span class="pestana-ico"><svg class="ico" aria-hidden="true"><use href="#i-compras"/></svg><span class="globo" id="globo-compras" hidden></span></span>Compras</a>
       <a href="#gastos" data-tab="gastos"><span class="pestana-ico"><svg class="ico" aria-hidden="true"><use href="#i-gastos"/></svg></span>Gastos</a>
-      <a href="#novedades" data-tab="novedades"><span class="pestana-ico"><svg class="ico" aria-hidden="true"><use href="#i-novedades"/></svg><span class="globo" id="globo-novedades" hidden></span></span>Novedades</a>
+      <a href="#novedades" data-tab="novedades"><span class="pestana-ico"><svg class="ico" aria-hidden="true"><use href="#i-novedades"/></svg><span class="globo" id="globo-novedades" hidden></span></span>Ofertas</a>
     </nav>
     <button type="button" class="icono-btn con-globo" id="btn-notas" data-act="notas" aria-label="Notas del hogar" hidden><svg class="ico" aria-hidden="true"><use href="#i-nota"/></svg><span class="globo" id="globo-notas" hidden></span></button>
     <button type="button" class="icono-btn" data-act="ajustes" aria-label="Ajustes"><svg class="ico" aria-hidden="true"><use href="#i-ajustes"/></svg></button>
@@ -87,6 +87,7 @@
         <button type="button" class="btn" data-act="producto-nuevo" aria-label="Agregar un producto a mano"><svg class="ico" aria-hidden="true"><use href="#i-mas"/></svg>A mano</button>
         <button type="button" class="btn" data-act="cocina" id="al-cocina" hidden><svg class="ico" aria-hidden="true"><use href="#i-olla"/></svg>¿Qué cocino?</button>
       </div>
+      <div id="al-oferta"></div>
       <div class="filtros" id="al-filtros" hidden>
         <label class="buscar"><svg class="ico" aria-hidden="true"><use href="#i-buscar"/></svg><input type="search" id="al-buscar" placeholder="Buscar en la alacena" autocomplete="off" aria-label="Buscar en la alacena"></label>
         <div class="chips" id="al-chips" role="group" aria-label="Filtrar la alacena"></div>
@@ -119,6 +120,7 @@
           <button type="button" data-act="frecuencia" data-frec="30" aria-pressed="false">Mes</button>
         </div>
       </div>
+      <div id="co-oferta"></div>
       <div class="lista" id="co-lista">
         <div class="vacio">
           <h3>Acá aparece qué comprar</h3>
@@ -144,10 +146,10 @@
       </div>
     </section>
 
-    <!-- Novedades: cómo cambiaron los precios de lo que se compra en casa y dónde conviene comprar -->
+    <!-- Ofertas (pestaña «novedades»): cómo cambiaron los precios de lo que se compra en casa y dónde conviene comprar -->
     <section id="tab-novedades" class="tab" aria-labelledby="tit-novedades" hidden>
       <div class="cabeza">
-        <h1 id="tit-novedades">Novedades</h1>
+        <h1 id="tit-novedades">Ofertas</h1>
         <p class="resumen" id="no-resumen"></p>
       </div>
       <div class="lista" id="no-cuerpo">

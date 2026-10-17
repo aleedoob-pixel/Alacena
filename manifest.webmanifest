@@ -27,6 +27,6 @@
   "shortcuts": [
     { "name": "Lista de compras", "short_name": "Compras", "description": "Qué falta en casa y cuánto llevar", "url": "./#compras", "icons": [{ "src": "iconos/icono-192.png", "sizes": "192x192", "type": "image/png" }] },
     { "name": "Gastos del mes", "short_name": "Gastos", "description": "Cuánto se va gastando y en qué", "url": "./#gastos", "icons": [{ "src": "iconos/icono-192.png", "sizes": "192x192", "type": "image/png" }] },
-    { "name": "Novedades de precios", "short_name": "Novedades", "description": "Qué subió y dónde conviene comprar", "url": "./#novedades", "icons": [{ "src": "iconos/icono-192.png", "sizes": "192x192", "type": "image/png" }] }
+    { "name": "Ofertas de hoy", "short_name": "Ofertas", "description": "Promos de hoy, qué subió y dónde conviene comprar", "url": "./#novedades", "icons": [{ "src": "iconos/icono-192.png", "sizes": "192x192", "type": "image/png" }] }
   ]
 }

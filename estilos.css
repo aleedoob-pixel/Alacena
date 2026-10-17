@@ -597,3 +597,39 @@ a.promo-hoy { display: block; margin: 0 0 10px; color: inherit; text-decoration:
 .conf-nuevo input { flex: 1; min-width: 0; }
 .dato.alerta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .aca-confirmar { margin: 8px 0; }
+
+/* Ofertas de hoy: como los afiches de oferta del súper — tarjetas de birome con el número en resaltador */
+.ofertas-hoy { margin: 0 -16px 18px; padding: 18px 16px 16px; background: #131C33; color: #FFFFFF; border-block: 3px solid #FFE352; }
+.oh-cabeza { display: flex; flex-direction: column; gap: 2px; margin-bottom: 12px; }
+.oh-dia { margin: 0; font: 700 13px/1.2 var(--f-mono); letter-spacing: .12em; text-transform: uppercase; color: #FFE352; }
+.oh-cabeza h2 { margin: 0; font: 900 26px/1.05 var(--f-ui); font-stretch: 75%; text-transform: uppercase; letter-spacing: .01em; }
+.oh-tarjetas { list-style: none; margin: 0 -16px; padding: 4px 16px 10px; display: flex; gap: 12px; overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none; }
+.oh-tarjetas::-webkit-scrollbar { display: none; }
+.oh-tarjeta { flex: none; width: 196px; scroll-snap-align: start; display: flex; flex-direction: column; gap: 3px; padding: 14px 14px 12px; border-radius: 10px; background: #2343B5; color: #FFFFFF; box-shadow: 0 6px 0 rgba(0, 0, 0, .28); transform: rotate(-1.2deg); }
+.oh-tarjeta.t1 { background: #BE2A20; transform: rotate(1deg); }
+.oh-tarjeta.t2 { background: #176B3E; transform: rotate(-.6deg); }
+.oh-tarjeta.t3 { background: #FFE352; color: #131C33; transform: rotate(.8deg); }
+.oh-tarjeta p { margin: 0; }
+.oh-pct { font: 900 66px/.9 var(--f-ui); font-stretch: 70%; color: #FFE352; letter-spacing: -.02em; }
+.oh-tarjeta.t3 .oh-pct { color: #BE2A20; }
+.oh-pct span { font-size: .5em; margin-left: 2px; vertical-align: top; }
+.oh-cadena { font: 800 20px/1.1 var(--f-ui); font-stretch: 85%; text-transform: uppercase; }
+.oh-medio { font: 600 14px/1.3 var(--f-ui); opacity: .92; }
+.oh-tope { font: 500 12.5px/1.35 var(--f-ui); opacity: .82; }
+.oh-donde { margin-top: 8px; align-self: flex-start; display: inline-flex; align-items: center; gap: 4px; min-height: 36px; padding: 0 12px; border: 0; border-radius: 18px; background: #FFFFFF; color: #131C33; font: 700 13.5px/1 var(--f-ui); cursor: pointer; }
+.oh-donde .ico { width: 16px; height: 16px; }
+.oh-manana { margin: 6px 0 0; font-size: 14px; color: #DCE4F0; }
+.oh-nota { margin: 8px 0 0; font-size: 12.5px; color: #AEBCD6; }
+.oh-nota .enlace { color: #FFE352; font-size: inherit; }
+@media (min-width: 720px) { .ofertas-hoy { margin: 0 0 18px; border: 3px solid #FFE352; border-radius: 12px; } }
+@media (prefers-reduced-motion: reduce) { .oh-tarjeta { transform: none !important; } }
+
+/* La banda de arriba de la alacena y de la lista de compras */
+.banda-oferta { display: flex; align-items: center; gap: 12px; margin: 0 0 14px; padding: 10px 12px; border-radius: 10px; background: #131C33; color: #FFFFFF; text-decoration: none; font-size: 14.5px; line-height: 1.3; box-shadow: 0 3px 0 #FFE352; }
+.bo-pct { flex: none; display: grid; place-items: center; min-width: 58px; height: 46px; padding: 0 6px; border-radius: 6px; background: #FFE352; color: #BE2A20; font: 900 24px/1 var(--f-ui); font-stretch: 75%; transform: rotate(-3deg); }
+.bo-ver { margin-left: auto; flex: none; font-weight: 700; color: #FFE352; }
+
+/* En el mapa: el cartel de los súpers con promo */
+.pin.promo { background: #BE2A20; color: #FFFFFF; border-color: #131C33; }
+.ofertas li.es-promo .oferta-nombre { font-weight: 800; }
+.fuentes { padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }

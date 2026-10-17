@@ -2,8 +2,8 @@
    Guarda los archivos de la app en el teléfono para que abra aunque no haya conexión (en un almacén sin
    señal, por ejemplo). Los datos del hogar no pasan por acá: de esos se ocupa Firebase, que tiene su propia
    copia en el teléfono. El mapa tampoco: sin conexión no hay mapa, y la lista de comercios queda igual. */
-const CACHE = 'libreta-v14';
-const APP = ['./', 'index.html', 'estilos.css', 'app.js', 'config.js', 'manifest.webmanifest', 'privacidad.html', 'iconos/icono-192.png', 'iconos/icono-512.png'];
+const CACHE = 'libreta-v15';
+const APP = ['./', 'index.html', 'estilos.css', 'app.js', 'config.js', 'manifest.webmanifest', 'privacidad.html', 'promos-bancos.json', 'iconos/icono-192.png', 'iconos/icono-512.png'];
 // De otros sitios solo se guarda lo que la app necesita para arrancar: la biblioteca de Firebase y las tipografías.
 const AJENOS = ['www.gstatic.com', 'fonts.googleapis.com', 'fonts.gstatic.com'];
 
